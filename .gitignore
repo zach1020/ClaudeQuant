@@ -1,0 +1,28 @@
+# Dependencies — never commit these (~300MB+)
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Environment variables — never commit API keys
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# TypeScript build info
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Vercel
+.vercel

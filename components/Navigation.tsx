@@ -1,0 +1,111 @@
+"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Activity, BookOpen, Bell, Settings, TrendingUp, Bot, Twitter } from "lucide-react";
+import { cn, getMarketPhase } from "@/lib/utils";
+import { useStore } from "@/lib/store";
+
+const NAV = [
+  { href: "/", label: "Dashboard", icon: Activity },
+  { href: "/trade", label: "Trade", icon: TrendingUp },
+  { href: "/journal", label: "Journal", icon: BookOpen },
+  { href: "/alerts", label: "Alerts", icon: Bell },
+  { href: "/settings", label: "Settings", icon: Settings },
+];
+
+const PHASE_COLOR: Record<string, string> = {
+  open: "text-bull",
+  pre: "text-warn",
+  after: "text-warn",
+  closed: "text-muted",
+};
+
+const PHASE_LABEL: Record<string, string> = {
+  open: "MARKET OPEN",
+  pre: "PRE-MARKET",
+  after: "AFTER-HOURS",
+  closed: "MARKET CLOSED",
+};
+
+export default function Navigation() {
+  const pathname = usePathname();
+  const phase = getMarketPhase();
+  const cashBalance = useStore((s) => s.cashBalance);
+  const positions = useStore((s) => s.positions);
+  const autoTradeEnabled = useStore((s) => s.autoTradeEnabled);
+  const tweets = useStore((s) => s.tweets);
+  const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
+  const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  const portfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
+
+  return (
+    <nav className="fixed top-0 left-0 right-0 z-50 h-12 bg-surface border-b border-border flex items-center px-4 gap-6">
+      {/* Logo */}
+      <div className="flex items-center gap-2 mr-4">
+        <div className="w-2 h-2 rounded-full bg-bull animate-pulse-bull" />
+        <span className="text-bull font-bold tracking-widest text-sm glow-bull">QUANT</span>
+      </div>
+
+      {/* Nav links */}
+      <div className="flex items-center gap-1">
+        {NAV.map(({ href, label, icon: Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded text-xs transition-colors",
+              pathname === href
+                ? "bg-bull/10 text-bull border border-bull/20"
+                : "text-text-dim hover:text-text hover:bg-border"
+            )}
+          >
+            <Icon size={13} />
+            {label}
+          </Link>
+        ))}
+      </div>
+
+      <div className="flex-1" />
+
+      {/* Portfolio value */}
+      <div className="flex items-center gap-4 text-xs">
+        <div className="text-text-dim">
+          Portfolio:{" "}
+          <span className="text-info font-bold">
+            ${portfolioValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div className="text-text-dim">
+          P&L:{" "}
+          <span className={cn("font-bold", totalUnrealized >= 0 ? "text-bull" : "text-bear")}>
+            {totalUnrealized >= 0 ? "+" : ""}${totalUnrealized.toFixed(2)}
+          </span>
+        </div>
+        {autoTradeEnabled && (
+          <div className={cn(
+            "flex items-center gap-1 text-[11px] border rounded px-2 py-0.5",
+            useStore.getState().autoTradeSettings?.allowLiveAutoTrade && useStore.getState().alpacaMode === "live"
+              ? "text-bear border-bear/40 bg-bear/10"
+              : "text-accent border-accent/30 bg-accent/5"
+          )}>
+            <Bot size={11} />
+            <span className="font-bold">AUTO</span>
+            {useStore.getState().alpacaMode === "live" && useStore.getState().autoTradeSettings?.allowLiveAutoTrade && (
+              <span className="font-bold text-bear">LIVE</span>
+            )}
+            <span className="text-text-dim">{autoTradeDailyCount} trades</span>
+          </div>
+        )}
+        {tweets.length > 0 && (
+          <div className="flex items-center gap-1 text-[11px] text-info border border-info/20 rounded px-2 py-0.5 bg-info/5">
+            <Twitter size={10} />
+            <span>{tweets.length}</span>
+          </div>
+        )}
+        <div className={cn("text-xs font-bold tracking-wider", PHASE_COLOR[phase])}>
+          <span className="animate-blink">▮</span> {PHASE_LABEL[phase]}
+        </div>
+      </div>
+    </nav>
+  );
+}
