@@ -5,7 +5,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { ticker, price, vwap, rsi, macd, macdSignal, volume, relVolume,
     prevHigh, prevLow, sma20, ema9, bbUpper, bbLower, news, xSentiment, apiKey,
-    trend15m, rsi15m, macd15m, recentWinRate, recentTradeCount } = body;
+    trend15m, rsi15m, macd15m, recentWinRate, recentTradeCount, allowShorts } = body;
 
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!key) {
@@ -46,7 +46,8 @@ Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this e
   "expires_in_minutes": number
 }
 For BUY signals: 15m trend should be bullish or neutral (not strongly bearish) for confirmation.
-For SELL signals: 15m trend should be bearish or neutral (not strongly bullish) for confirmation.`;
+For SELL signals: 15m trend should be bearish or neutral (not strongly bullish) for confirmation.
+${allowShorts === false ? "IMPORTANT: Short selling is disabled on this account. Do NOT return SELL signals. Only return BUY or HOLD." : ""}`;
 
   try {
     const response = await client.messages.create({

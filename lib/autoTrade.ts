@@ -130,6 +130,7 @@ export function useAutoTradeEngine() {
             macd15m: trend15m,
             recentWinRate,
             recentTradeCount,
+            allowShorts: settings.allowShorts,
           }),
         });
         const data = await res.json();
