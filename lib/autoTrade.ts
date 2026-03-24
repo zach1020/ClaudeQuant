@@ -202,15 +202,14 @@ export function useAutoTradeEngine() {
       : 0;
     const availableCash = isLive && liveAccount ? liveAccount.buyingPower : cashBalance - unsettledTotal;
 
-    // Out-of-funds check
-    const MIN_CASH = 100;
-    if (availableCash < MIN_CASH) {
+    // Out-of-funds check — hard stop only when truly $0
+    if (availableCash <= 0) {
       setAutoTradeEnabled(false);
       setOutOfFundsError(true);
       addAutoTradeLog({
         ticker: "SYSTEM",
         decision: "BLOCKED",
-        reason: `Insufficient funds ($${availableCash.toFixed(2)} available, minimum $${MIN_CASH}). Auto-trade disabled.`,
+        reason: `No funds available ($${availableCash.toFixed(2)}). Auto-trade disabled.`,
       });
       return;
     }
