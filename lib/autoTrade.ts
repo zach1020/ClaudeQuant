@@ -41,6 +41,7 @@ export function useAutoTradeEngine() {
   const addAutoTradeLog = useStore((s) => s.addAutoTradeLog);
   const resetAutoTradeDailyStats = useStore((s) => s.resetAutoTradeDailyStats);
   const setAutoTradeEnabled = useStore((s) => s.setAutoTradeEnabled);
+  const setAutoTradeSettings = useStore((s) => s.setAutoTradeSettings);
   const recordAnthropicUsage = useStore((s) => s.recordAnthropicUsage);
   const setApiCreditError = useStore((s) => s.setApiCreditError);
   const setOutOfFundsError = useStore((s) => s.setOutOfFundsError);
@@ -260,16 +261,6 @@ export function useAutoTradeEngine() {
         }
       }
 
-      // Near S/R filter — avoid entries within 0.5% of prior day high/low
-      if (quote) {
-        const nearHigh = Math.abs(signal.entry - quote.high) / quote.high < 0.005;
-        const nearLow = Math.abs(signal.entry - quote.low) / quote.low < 0.005;
-        if (nearHigh || nearLow) {
-          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Entry $${signal.entry.toFixed(2)} too close to prior day ${nearHigh ? "high" : "low"} — likely resistance/support rejection.`, signal });
-          continue;
-        }
-      }
-
       // Confidence gate
       if (signal.confidence < settings.confidenceThreshold) {
         addAutoTradeLog({
@@ -358,12 +349,24 @@ export function useAutoTradeEngine() {
           });
           const data = await res.json();
           if (!res.ok || data.error) {
-            addAutoTradeLog({
-              ticker,
-              decision: "BLOCKED",
-              reason: `Alpaca rejected order: ${data.error ?? "unknown error"}`,
-              signal,
-            });
+            const errMsg: string = data.error ?? "unknown error";
+            // Alpaca rejects shorts on cash/non-margin accounts — auto-disable to stop retrying
+            if (/short|not allowed to short/i.test(errMsg)) {
+              setAutoTradeSettings({ allowShorts: false });
+              addAutoTradeLog({
+                ticker,
+                decision: "BLOCKED",
+                reason: `Shorting not allowed on this Alpaca account. 'Allow Shorts' has been disabled automatically. Enable a margin account at alpaca.markets if you want to short.`,
+                signal,
+              });
+            } else {
+              addAutoTradeLog({
+                ticker,
+                decision: "BLOCKED",
+                reason: `Alpaca rejected order: ${errMsg}`,
+                signal,
+              });
+            }
             continue;
           }
           // Record locally for the journal using fractional qty
@@ -411,7 +414,7 @@ export function useAutoTradeEngine() {
   }, [
     autoTradeEnabled, settings, autoTradeDailyCount, autoTradeDailyPnl,
     watchlist, cashBalance, positions, tweets, evaluateSignal,
-    executeOrder, addAutoTradeLog, setAutoTradeEnabled, setOutOfFundsError,
+    executeOrder, addAutoTradeLog, setAutoTradeEnabled, setAutoTradeSettings, setOutOfFundsError,
     unsettledFunds, cashAccount,
   ]);
 
