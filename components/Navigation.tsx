@@ -30,8 +30,8 @@ const PHASE_LABEL: Record<string, string> = {
 export default function Navigation() {
   const pathname = usePathname();
   const phase = getMarketPhase();
-  const cashBalance = useStore((s) => s.alpacaMode === "live" ? 0 : s.cashBalance);
-  const positions = useStore((s) => s.alpacaMode === "live" ? [] : s.positions);
+  const cashBalance = useStore((s) => s.cashBalance);
+  const positions = useStore((s) => s.positions);
   const autoTradeEnabled = useStore((s) => s.autoTradeEnabled);
   const tweets = useStore((s) => s.tweets);
   const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
@@ -44,9 +44,12 @@ export default function Navigation() {
   const bannerCount = (apiCreditError ? 1 : 0) + (outOfFundsError ? 1 : 0);
 
   const isLive = alpacaMode === "live";
-  const paperPortfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
-  const portfolioValue = isLive ? (liveAccount?.portfolioValue ?? null) : paperPortfolioValue;
-  const dayPnl = isLive ? (liveAccount?.dayPnl ?? null) : positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  const portfolioValue = isLive
+    ? (liveAccount?.portfolioValue ?? null)
+    : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
+  const dayPnl = isLive
+    ? (liveAccount?.dayPnl ?? null)
+    : positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
 
   return (
     <>
