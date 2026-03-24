@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef } from "react";
 import { useStore } from "./store";
-import { computeIndicators } from "./indicators";
+import { computeIndicators, aggregateCandles } from "./indicators";
 import { isMarketOpen } from "./utils";
 import type { AISignal } from "./types";
 
@@ -31,6 +31,7 @@ export function useAutoTradeEngine() {
   const autoTradeDailyPnl = useStore((s) => s.autoTradeDailyPnl);
   const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
   const autoTradeLastReset = useStore((s) => s.autoTradeLastReset);
+  const trades = useStore((s) => s.trades);
 
   const executeOrder = useStore((s) => s.executeOrder);
   const addSignal = useStore((s) => s.addSignal);
@@ -39,8 +40,10 @@ export function useAutoTradeEngine() {
   const setAutoTradeEnabled = useStore((s) => s.setAutoTradeEnabled);
   const recordAnthropicUsage = useStore((s) => s.recordAnthropicUsage);
   const setApiCreditError = useStore((s) => s.setApiCreditError);
+  const setOutOfFundsError = useStore((s) => s.setOutOfFundsError);
 
   const lastTradeTime = useRef<Record<string, number>>({});
+  const lastMarketClosedLog = useRef<number>(0);
 
   // Reset daily counters at midnight
   useEffect(() => {
@@ -65,6 +68,23 @@ export function useAutoTradeEngine() {
       if (!quote || !candles?.length) return null;
 
       const ind = computeIndicators(candles);
+
+      // Multi-timeframe: aggregate 5m candles into 15m (every 3 candles)
+      const candles15m = aggregateCandles(candles, 3);
+      const ind15m = computeIndicators(candles15m);
+      const trend15m = ind15m.macd !== undefined && ind15m.macdSignal !== undefined
+        ? ind15m.macd > ind15m.macdSignal ? "bullish" : ind15m.macd < ind15m.macdSignal ? "bearish" : "neutral"
+        : "N/A";
+
+      // Recent win rate feedback loop
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayTrades = trades.filter((t) => t.exitTime >= todayStart.getTime());
+      const recentWinRate = todayTrades.length > 0
+        ? todayTrades.filter((t) => t.pnl > 0).length / todayTrades.length
+        : 0;
+      const recentTradeCount = todayTrades.length;
+
       const tickerNews = news
         .filter((n) => !n.ticker || n.ticker === ticker)
         .slice(0, 3)
@@ -100,6 +120,11 @@ export function useAutoTradeEngine() {
             news: tickerNews || null,
             xSentiment: xSentimentSummary,
             apiKey: anthropicKey,
+            trend15m,
+            rsi15m: ind15m.rsi,
+            macd15m: trend15m,
+            recentWinRate,
+            recentTradeCount,
           }),
         });
         const data = await res.json();
@@ -111,13 +136,14 @@ export function useAutoTradeEngine() {
           recordAnthropicUsage(data.usage.input_tokens ?? 0, data.usage.output_tokens ?? 0);
         }
         if (data.signal) {
-          addSignal(data.signal);
+          // Only cache actionable signals — don't cache HOLD so it re-evaluates next cycle
+          if (data.signal.signal !== "HOLD") addSignal(data.signal);
           return data.signal;
         }
       } catch {}
       return null;
     },
-    [signals, anthropicKey, quotes, candlesMap, news, tweets, addSignal, recordAnthropicUsage, setApiCreditError]
+    [signals, anthropicKey, quotes, candlesMap, news, tweets, trades, addSignal, recordAnthropicUsage, setApiCreditError]
   );
 
   const evaluateAndTrade = useCallback(async () => {
@@ -137,7 +163,18 @@ export function useAutoTradeEngine() {
     }
 
     // Market hours gate
-    if (settings.marketHoursOnly && !isMarketOpen()) return;
+    if (settings.marketHoursOnly && !isMarketOpen()) {
+      const fiveMin = 5 * 60 * 1000;
+      if (Date.now() - lastMarketClosedLog.current > fiveMin) {
+        lastMarketClosedLog.current = Date.now();
+        addAutoTradeLog({
+          ticker: "SYSTEM",
+          decision: "BLOCKED",
+          reason: "Market is closed. Disable 'Market Hours Only' in Settings to trade outside hours.",
+        });
+      }
+      return;
+    }
 
     // Daily circuit breakers
     if (autoTradeDailyCount >= settings.maxDailyTrades) return;
@@ -157,16 +194,74 @@ export function useAutoTradeEngine() {
       : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
     const availableCash = isLive && liveAccount ? liveAccount.buyingPower : cashBalance;
 
+    // Out-of-funds check
+    const MIN_CASH = 100;
+    if (availableCash < MIN_CASH) {
+      setAutoTradeEnabled(false);
+      setOutOfFundsError(true);
+      addAutoTradeLog({
+        ticker: "SYSTEM",
+        decision: "BLOCKED",
+        reason: `Insufficient funds ($${availableCash.toFixed(2)} available, minimum $${MIN_CASH}). Auto-trade disabled.`,
+      });
+      return;
+    }
+
     for (const ticker of watchlist.slice(0, 5)) {
       // Per-ticker cooldown
       const cooldownMs = settings.cooldownMinutes * 60 * 1000;
       if (Date.now() - (lastTradeTime.current[ticker] ?? 0) < cooldownMs) continue;
 
-      // Skip if already holding this ticker
-      if (positions.find((p) => p.ticker === ticker && p.quantity > 0)) continue;
-
       const signal = await evaluateSignal(ticker);
-      if (!signal || signal.signal === "HOLD") continue;
+      if (!signal) continue;
+
+      if (signal.signal === "HOLD") {
+        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: "Signal is HOLD — no trade.", signal });
+        continue;
+      }
+
+      // Skip if already holding this ticker on the same side as the signal
+      const holdingSameSide = positions.find((p) =>
+        p.ticker === ticker &&
+        p.quantity > 0 &&
+        ((signal.signal === "BUY" && p.side === "LONG") || (signal.signal === "SELL" && p.side === "SHORT"))
+      );
+      if (holdingSameSide) {
+        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Already holding ${holdingSameSide.side} position.`, signal });
+        continue;
+      }
+
+      // Volume filter — skip thin markets
+      const quote = useStore.getState().quotes[ticker];
+      const candles = useStore.getState().candles[ticker];
+      const ind = candles?.length ? computeIndicators(candles) : {};
+      if (ind.relVolume !== undefined && ind.relVolume < 0.5) {
+        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Volume too thin (${ind.relVolume.toFixed(2)}x avg). Waiting for liquidity.`, signal });
+        continue;
+      }
+
+      // Trend filter — only trade with the trend
+      if (ind.sma20 && quote) {
+        const aboveSma = quote.price > ind.sma20;
+        if (signal.signal === "BUY" && !aboveSma) {
+          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `BUY skipped — price below SMA20 ($${ind.sma20.toFixed(2)}). Counter-trend.`, signal });
+          continue;
+        }
+        if (signal.signal === "SELL" && aboveSma) {
+          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `SELL skipped — price above SMA20 ($${ind.sma20.toFixed(2)}). Counter-trend.`, signal });
+          continue;
+        }
+      }
+
+      // Near S/R filter — avoid entries within 0.5% of prior day high/low
+      if (quote) {
+        const nearHigh = Math.abs(signal.entry - quote.high) / quote.high < 0.005;
+        const nearLow = Math.abs(signal.entry - quote.low) / quote.low < 0.005;
+        if (nearHigh || nearLow) {
+          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Entry $${signal.entry.toFixed(2)} too close to prior day ${nearHigh ? "high" : "low"} — likely resistance/support rejection.`, signal });
+          continue;
+        }
+      }
 
       // Confidence gate
       if (signal.confidence < settings.confidenceThreshold) {
@@ -211,11 +306,16 @@ export function useAutoTradeEngine() {
         }
       }
 
-      // Position sizing
-      const riskPerShare = Math.abs(signal.entry - signal.stop_loss);
+      // Position sizing — ATR-based if available, else use signal stop
+      const riskPerShare = ind.atr
+        ? ind.atr * 2
+        : Math.abs(signal.entry - signal.stop_loss);
       if (riskPerShare <= 0) continue;
 
-      let shares = Math.floor((portfolioValue * (settings.riskPerTrade / 100)) / riskPerShare);
+      // Drawdown scaling — reduce size when down on the day
+      const drawdownFactor = autoTradeDailyPnl < -(settings.maxDailyLoss * 0.5) ? 0.5 : 1.0;
+
+      let shares = Math.floor((portfolioValue * (settings.riskPerTrade / 100) * drawdownFactor) / riskPerShare);
       if (shares * signal.entry > settings.maxPositionSize)
         shares = Math.floor(settings.maxPositionSize / signal.entry);
       if (shares * signal.entry > availableCash)
@@ -302,42 +402,116 @@ export function useAutoTradeEngine() {
   }, [
     autoTradeEnabled, settings, autoTradeDailyCount, autoTradeDailyPnl,
     watchlist, cashBalance, positions, tweets, evaluateSignal,
-    executeOrder, addAutoTradeLog, setAutoTradeEnabled,
+    executeOrder, addAutoTradeLog, setAutoTradeEnabled, setOutOfFundsError,
   ]);
 
   const monitorPositions = useCallback(() => {
     const { positions, quotes } = useStore.getState();
+    const now = Date.now();
+
+    // End-of-day close: force-close all positions 15 min before 4pm ET
+    const et = new Date(now);
+    const etTime = new Date(et.toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const etMinutes = etTime.getHours() * 60 + etTime.getMinutes();
+    const isEodClose = etMinutes >= 15 * 60 + 45 && etMinutes < 16 * 60; // 3:45–4:00 PM ET
+
     for (const pos of positions) {
       if (pos.quantity <= 0) continue;
       const price = quotes[pos.ticker]?.price ?? pos.currentPrice;
 
+      // End-of-day: close everything
+      if (isEodClose) {
+        executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
+        addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `End-of-day close @ $${price.toFixed(2)} (3:45 PM ET cutoff).` });
+        continue;
+      }
+
+      // Time-based exit
+      if (settings.maxPositionMinutes > 0) {
+        const ageMinutes = (now - pos.entryTime) / 60000;
+        if (ageMinutes >= settings.maxPositionMinutes) {
+          executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
+          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Time-based exit after ${ageMinutes.toFixed(0)} min (max ${settings.maxPositionMinutes} min).` });
+          continue;
+        }
+      }
+
+      // Update trailing stop
+      let activeStopLoss = pos.stopLoss;
+      if (settings.trailingStopPct > 0 && pos.stopLoss !== undefined) {
+        const trailFactor = settings.trailingStopPct / 100;
+        if (pos.side === "LONG") {
+          const trailedStop = price * (1 - trailFactor);
+          if (trailedStop > (pos.trailingStop ?? pos.stopLoss ?? 0)) {
+            // Update trailing stop in store
+            useStore.setState((s) => ({
+              positions: s.positions.map((p) =>
+                p.id === pos.id ? { ...p, trailingStop: trailedStop } : p
+              ),
+            }));
+            activeStopLoss = trailedStop;
+          } else {
+            activeStopLoss = pos.trailingStop ?? pos.stopLoss;
+          }
+        } else {
+          const trailedStop = price * (1 + trailFactor);
+          if (trailedStop < (pos.trailingStop ?? pos.stopLoss ?? Infinity)) {
+            useStore.setState((s) => ({
+              positions: s.positions.map((p) =>
+                p.id === pos.id ? { ...p, trailingStop: trailedStop } : p
+              ),
+            }));
+            activeStopLoss = trailedStop;
+          } else {
+            activeStopLoss = pos.trailingStop ?? pos.stopLoss;
+          }
+        }
+      }
+
+      // Partial take-profit: sell 50% when price hits midpoint between entry and target
+      if (settings.partialTpEnabled && !pos.partialTpTaken && pos.takeProfit) {
+        const midpoint = pos.side === "LONG"
+          ? pos.entryPrice + (pos.takeProfit - pos.entryPrice) * 0.5
+          : pos.entryPrice - (pos.entryPrice - pos.takeProfit) * 0.5;
+        const hitMidpoint = pos.side === "LONG" ? price >= midpoint : price <= midpoint;
+        if (hitMidpoint && pos.quantity >= 2) {
+          const halfQty = Math.floor(pos.quantity / 2);
+          executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: halfQty, price });
+          // Move stop to breakeven
+          useStore.setState((s) => ({
+            positions: s.positions.map((p) =>
+              p.id === pos.id
+                ? { ...p, partialTpTaken: true, stopLoss: pos.entryPrice, trailingStop: pos.entryPrice }
+                : p
+            ),
+          }));
+          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Partial TP: sold ${halfQty} shares @ $${price.toFixed(2)} (midpoint $${midpoint.toFixed(2)}). Stop moved to breakeven $${pos.entryPrice.toFixed(2)}.` });
+          continue;
+        }
+      }
+
+      // Stop-loss / take-profit check
       let reason: string | null = null;
       if (pos.side === "LONG") {
-        if (pos.stopLoss && price <= pos.stopLoss) {
-          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${pos.stopLoss.toFixed(2)})`;
+        if (activeStopLoss && price <= activeStopLoss) {
+          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${activeStopLoss.toFixed(2)})`;
         } else if (pos.takeProfit && price >= pos.takeProfit) {
           reason = `Take-profit triggered @ $${price.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
         }
       } else {
-        if (pos.stopLoss && price >= pos.stopLoss) {
-          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${pos.stopLoss.toFixed(2)})`;
+        if (activeStopLoss && price >= activeStopLoss) {
+          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${activeStopLoss.toFixed(2)})`;
         } else if (pos.takeProfit && price <= pos.takeProfit) {
           reason = `Take-profit triggered @ $${price.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
         }
       }
 
       if (reason) {
-        executeOrder({
-          ticker: pos.ticker,
-          side: pos.side === "LONG" ? "SELL" : "BUY",
-          type: "MARKET",
-          quantity: pos.quantity,
-          price,
-        });
+        executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
         addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason });
       }
     }
-  }, [executeOrder, addAutoTradeLog]);
+  }, [executeOrder, addAutoTradeLog, settings]);
 
   useEffect(() => {
     if (!autoTradeEnabled) return;

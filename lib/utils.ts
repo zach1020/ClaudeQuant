@@ -6,6 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatPrice(price: number, decimals = 2): string {
+  if (price == null || !isFinite(price)) return "—";
   return price.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,

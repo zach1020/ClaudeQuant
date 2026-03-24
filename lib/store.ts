@@ -87,6 +87,8 @@ interface AppState {
   // Notifications
   apiCreditError: boolean;
   setApiCreditError: (v: boolean) => void;
+  outOfFundsError: boolean;
+  setOutOfFundsError: (v: boolean) => void;
 
   // Actions — settings
   setApiKeys: (keys: Partial<{ polygonApiKey: string; alpacaKey: string; alpacaSecret: string; alpacaLiveKey: string; alpacaLiveSecret: string; anthropicKey: string }>) => void;
@@ -190,6 +192,9 @@ export const useStore = create<AppState>()(
         requireXConfirmation: false,
         marketHoursOnly: true,
         allowLiveAutoTrade: false,
+        trailingStopPct: 1.5,
+        maxPositionMinutes: 60,
+        partialTpEnabled: true,
       },
       autoTradeLogs: [],
       autoTradeDailyPnl: 0,
@@ -202,6 +207,8 @@ export const useStore = create<AppState>()(
       // Notifications
       apiCreditError: false,
       setApiCreditError: (v) => set({ apiCreditError: v }),
+      outOfFundsError: false,
+      setOutOfFundsError: (v) => set({ outOfFundsError: v }),
 
       setApiKeys: (keys) => set((s) => ({ ...s, ...keys })),
 
@@ -285,6 +292,43 @@ export const useStore = create<AppState>()(
         );
 
         if (orderData.side === "BUY") {
+          // Buy-to-cover: close an existing short position
+          const shortPos = positions.find(
+            (p) => p.ticker === orderData.ticker && p.side === "SHORT"
+          );
+          if (shortPos) {
+            const qty = Math.min(orderData.quantity, shortPos.quantity);
+            const pnl = (shortPos.entryPrice - fillPrice) * qty;
+            const pnlPct = (shortPos.entryPrice - fillPrice) / shortPos.entryPrice * 100;
+            const coverCost = fillPrice * qty;
+            if (cashBalance < coverCost) return; // Insufficient funds to cover
+            const trade: Trade = {
+              id: generateId(),
+              ticker: orderData.ticker,
+              side: "SHORT",
+              quantity: qty,
+              entryPrice: shortPos.entryPrice,
+              exitPrice: fillPrice,
+              entryTime: shortPos.entryTime,
+              exitTime: Date.now(),
+              pnl,
+              pnlPct,
+            };
+            set((s) => ({
+              cashBalance: s.cashBalance - coverCost,
+              orders: [...s.orders, order],
+              trades: [trade, ...s.trades],
+              positions:
+                orderData.quantity >= shortPos.quantity
+                  ? s.positions.filter((p) => p.id !== shortPos.id)
+                  : s.positions.map((p) =>
+                      p.id === shortPos.id
+                        ? { ...p, quantity: p.quantity - orderData.quantity }
+                        : p
+                    ),
+            }));
+            return;
+          }
           if (cashBalance < cost) return; // Insufficient funds
           if (existingPos) {
             const newQty = existingPos.quantity + orderData.quantity;
@@ -319,11 +363,12 @@ export const useStore = create<AppState>()(
             }));
           }
         } else {
-          // SELL — close or short
+          // SELL — close existing long, or open a new short
           const longPos = positions.find(
             (p) => p.ticker === orderData.ticker && p.side === "LONG"
           );
           if (longPos) {
+            // Close long position
             const proceeds = fillPrice * Math.min(orderData.quantity, longPos.quantity);
             const pnl = (fillPrice - longPos.entryPrice) * Math.min(orderData.quantity, longPos.quantity);
             const pnlPct = (fillPrice - longPos.entryPrice) / longPos.entryPrice * 100;
@@ -351,6 +396,27 @@ export const useStore = create<AppState>()(
                         ? { ...p, quantity: p.quantity - orderData.quantity }
                         : p
                     ),
+            }));
+          } else {
+            // Open short position — receive proceeds upfront (paper trading)
+            const proceeds = fillPrice * orderData.quantity;
+            const newPosition: Position = {
+              id: generateId(),
+              ticker: orderData.ticker,
+              side: "SHORT",
+              quantity: orderData.quantity,
+              entryPrice: fillPrice,
+              entryTime: Date.now(),
+              currentPrice: fillPrice,
+              stopLoss: orderData.stopPrice,
+              takeProfit: orderData.takeProfitPrice,
+              unrealizedPnl: 0,
+              unrealizedPnlPct: 0,
+            };
+            set((s) => ({
+              cashBalance: s.cashBalance + proceeds,
+              orders: [...s.orders, order],
+              positions: [...s.positions, newPosition],
             }));
           }
         }

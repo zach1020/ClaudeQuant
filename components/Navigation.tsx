@@ -37,7 +37,10 @@ export default function Navigation() {
   const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
   const apiCreditError = useStore((s) => s.apiCreditError);
   const setApiCreditError = useStore((s) => s.setApiCreditError);
+  const outOfFundsError = useStore((s) => s.outOfFundsError);
+  const setOutOfFundsError = useStore((s) => s.setOutOfFundsError);
   const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  const bannerCount = (apiCreditError ? 1 : 0) + (outOfFundsError ? 1 : 0);
   const portfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
 
   return (
@@ -51,7 +54,16 @@ export default function Navigation() {
           </button>
         </div>
       )}
-    <nav className={cn("fixed left-0 right-0 z-50 h-12 bg-surface border-b border-border flex items-center px-4 gap-6", apiCreditError ? "top-8" : "top-0")}>
+      {outOfFundsError && (
+        <div className={cn("fixed left-0 right-0 z-[60] flex items-center gap-3 px-4 py-2 bg-warn text-black text-xs font-medium", apiCreditError ? "top-8" : "top-0")}>
+          <AlertTriangle size={13} className="flex-shrink-0" />
+          <span>Insufficient funds — auto-trading has been stopped. Add funds or reset your paper balance in Settings.</span>
+          <button onClick={() => setOutOfFundsError(false)} className="ml-auto flex-shrink-0 hover:opacity-70 transition-opacity">
+            <X size={13} />
+          </button>
+        </div>
+      )}
+    <nav className={cn("fixed left-0 right-0 z-50 h-12 bg-surface border-b border-border flex items-center px-4 gap-6", bannerCount === 2 ? "top-16" : bannerCount === 1 ? "top-8" : "top-0")}>
       {/* Logo */}
       <div className="flex items-center gap-2 mr-4">
         <div className="w-2 h-2 rounded-full bg-bull animate-pulse-bull" />

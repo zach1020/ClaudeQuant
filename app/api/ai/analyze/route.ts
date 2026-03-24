@@ -4,7 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const { ticker, price, vwap, rsi, macd, macdSignal, volume, relVolume,
-    prevHigh, prevLow, sma20, ema9, bbUpper, bbLower, news, xSentiment, apiKey } = body;
+    prevHigh, prevLow, sma20, ema9, bbUpper, bbLower, news, xSentiment, apiKey,
+    trend15m, rsi15m, macd15m, recentWinRate, recentTradeCount } = body;
 
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!key) {
@@ -28,6 +29,8 @@ BB Upper: $${bbUpper?.toFixed(2) ?? "N/A"} | BB Lower: $${bbLower?.toFixed(2) ??
 Prior Day High: $${prevHigh?.toFixed(2) ?? "N/A"} | Prior Day Low: $${prevLow?.toFixed(2) ?? "N/A"}
 Recent news: ${news ?? "none"}
 X/Twitter sentiment: ${xSentiment ?? "not available"}
+15m Trend: ${trend15m ?? "N/A"} | 15m RSI: ${rsi15m?.toFixed(1) ?? "N/A"} | 15m MACD: ${macd15m ?? "N/A"}
+Recent performance: ${recentTradeCount > 0 ? `${recentTradeCount} trades, ${(recentWinRate * 100).toFixed(0)}% win rate today` : "No trades yet today"}
 
 Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this exact structure (or null if no trade):
 {
@@ -41,13 +44,15 @@ Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this e
   "risk_reward": number,
   "timeframe": "1m" | "5m" | "15m",
   "expires_in_minutes": number
-}`;
+}
+For BUY signals: 15m trend should be bullish or neutral (not strongly bearish) for confirmation.
+For SELL signals: 15m trend should be bearish or neutral (not strongly bullish) for confirmation.`;
 
   try {
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 512,
-      system: `You are an expert day trader and market analyst. You monitor real-time stock data and identify high-probability intraday trading setups. You analyze price action, technical indicators, and news sentiment. Always return structured JSON signals. Be conservative — only flag high-confidence setups (confidence > 0.65). Never provide financial advice. This is for educational/simulation purposes only.`,
+      system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge (e.g. RSI exactly 50, price exactly at VWAP, no volume). If there is any directional lean in the data, commit to BUY or SELL with the appropriate confidence level. Set confidence based on how many indicators agree: 0.60–0.69 weak, 0.70–0.79 moderate, 0.80+ strong. Never provide financial advice. This is for educational/simulation purposes only.`,
       messages: [{ role: "user", content: prompt }],
     });
 

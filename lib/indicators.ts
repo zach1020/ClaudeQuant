@@ -112,6 +112,39 @@ export function calcRelativeVolume(volumes: number[], period = 20): number[] {
   return volumes.map((v, i) => (isNaN(avgVol[i]) ? NaN : v / avgVol[i]));
 }
 
+export function calcATR(candles: Candle[], period = 14): number[] {
+  const result: number[] = new Array(candles.length).fill(NaN);
+  if (candles.length < period + 1) return result;
+  const trs = candles.map((c, i) => {
+    if (i === 0) return c.high - c.low;
+    const pc = candles[i - 1].close;
+    return Math.max(c.high - c.low, Math.abs(c.high - pc), Math.abs(c.low - pc));
+  });
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  result[period - 1] = atr;
+  for (let i = period; i < candles.length; i++) {
+    atr = (atr * (period - 1) + trs[i]) / period;
+    result[i] = atr;
+  }
+  return result;
+}
+
+export function aggregateCandles(candles: Candle[], factor: number): Candle[] {
+  const result: Candle[] = [];
+  for (let i = 0; i + factor <= candles.length; i += factor) {
+    const slice = candles.slice(i, i + factor);
+    result.push({
+      time: slice[0].time,
+      open: slice[0].open,
+      high: Math.max(...slice.map((c) => c.high)),
+      low: Math.min(...slice.map((c) => c.low)),
+      close: slice[slice.length - 1].close,
+      volume: slice.reduce((s, c) => s + c.volume, 0),
+    });
+  }
+  return result;
+}
+
 export function computeIndicators(candles: Candle[]): Indicators {
   if (candles.length < 2) return {};
 
@@ -128,6 +161,7 @@ export function computeIndicators(candles: Candle[]): Indicators {
   const bb = calcBollingerBands(closes, 20);
   const vwapArr = calcVWAP(candles);
   const relVolArr = calcRelativeVolume(volumes, 20);
+  const atrArr = calcATR(candles, 14);
 
   const last = candles.length - 1;
 
@@ -146,6 +180,7 @@ export function computeIndicators(candles: Candle[]): Indicators {
     bbMiddle: bb.middle[last],
     bbLower: bb.lower[last],
     relVolume: relVolArr[last],
+    atr: atrArr[last],
   };
 }
 

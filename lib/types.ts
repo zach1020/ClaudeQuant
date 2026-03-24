@@ -40,6 +40,7 @@ export interface Indicators {
   bbMiddle?: number;
   bbLower?: number;
   relVolume?: number;
+  atr?: number;
 }
 
 export type SignalType = "BUY" | "SELL" | "HOLD";
@@ -90,6 +91,8 @@ export interface Position {
   takeProfit?: number;
   unrealizedPnl: number;
   unrealizedPnlPct: number;
+  trailingStop?: number;       // current trailing stop level (updated as price moves)
+  partialTpTaken?: boolean;    // whether 50% partial TP has been executed
 }
 
 export interface Trade {
@@ -208,6 +211,9 @@ export interface AutoTradeSettings {
   requireXConfirmation: boolean; // only trade when X sentiment agrees
   marketHoursOnly: boolean;     // only run 9:30AM–4:00PM ET, no overnight/weekend calls
   allowLiveAutoTrade: boolean;  // allow auto-trade to execute real orders in live mode
+  trailingStopPct: number;     // trail stop by this % as position moves in favor (0 = disabled)
+  maxPositionMinutes: number;  // force-close after this many minutes (0 = disabled)
+  partialTpEnabled: boolean;   // sell 50% at midpoint, move stop to breakeven
 }
 
 export type AutoTradeDecision = "EXECUTED" | "SKIPPED" | "BLOCKED";

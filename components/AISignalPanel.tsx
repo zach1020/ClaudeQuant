@@ -207,7 +207,7 @@ function SignalCard({ signal }: { signal: AISignal }) {
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-[10px] text-text-dim">
-          <span>R:R <span className="text-info">{signal.risk_reward.toFixed(1)}x</span></span>
+          <span>R:R <span className="text-info">{signal.risk_reward?.toFixed(1) ?? "—"}x</span></span>
           <span>{signal.timeframe}</span>
           <span>{formatDateTime(signal.timestamp)}</span>
         </div>
