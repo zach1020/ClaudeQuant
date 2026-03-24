@@ -44,6 +44,7 @@ export default function StockDiscovery() {
   const watchlist = useStore((s) => s.watchlist);
   const addToWatchlist = useStore((s) => s.addToWatchlist);
   const recordAnthropicUsage = useStore((s) => s.recordAnthropicUsage);
+  const setApiCreditError = useStore((s) => s.setApiCreditError);
 
   const [result, setResult] = useState<DiscoverResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,7 +72,10 @@ export default function StockDiscovery() {
       });
       const data = await res.json();
 
-      if (data.error) {
+      if (data.creditError) {
+        setApiCreditError(true);
+        setError("Anthropic API credits exhausted. Please top up your billing at console.anthropic.com.");
+      } else if (data.error) {
         setError(data.error);
       } else {
         if (data.usage) {
@@ -85,7 +89,7 @@ export default function StockDiscovery() {
       clearInterval(interval);
       setLoading(false);
     }
-  }, [anthropicKey, polygonApiKey, loading, recordAnthropicUsage]);
+  }, [anthropicKey, polygonApiKey, loading, recordAnthropicUsage, setApiCreditError]);
 
   const toggleExpand = (ticker: string) =>
     setExpanded((p) => ({ ...p, [ticker]: !p[ticker] }));

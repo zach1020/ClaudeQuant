@@ -38,6 +38,7 @@ export function useAutoTradeEngine() {
   const resetAutoTradeDailyStats = useStore((s) => s.resetAutoTradeDailyStats);
   const setAutoTradeEnabled = useStore((s) => s.setAutoTradeEnabled);
   const recordAnthropicUsage = useStore((s) => s.recordAnthropicUsage);
+  const setApiCreditError = useStore((s) => s.setApiCreditError);
 
   const lastTradeTime = useRef<Record<string, number>>({});
 
@@ -102,6 +103,10 @@ export function useAutoTradeEngine() {
           }),
         });
         const data = await res.json();
+        if (data.creditError) {
+          setApiCreditError(true);
+          return null;
+        }
         if (data.usage) {
           recordAnthropicUsage(data.usage.input_tokens ?? 0, data.usage.output_tokens ?? 0);
         }
@@ -112,7 +117,7 @@ export function useAutoTradeEngine() {
       } catch {}
       return null;
     },
-    [signals, anthropicKey, quotes, candlesMap, news, tweets, addSignal, recordAnthropicUsage]
+    [signals, anthropicKey, quotes, candlesMap, news, tweets, addSignal, recordAnthropicUsage, setApiCreditError]
   );
 
   const evaluateAndTrade = useCallback(async () => {

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BookOpen, Bell, Settings, TrendingUp, Bot, Twitter } from "lucide-react";
+import { Activity, BookOpen, Bell, Settings, TrendingUp, Bot, Twitter, AlertTriangle, X } from "lucide-react";
 import { cn, getMarketPhase } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 
@@ -35,11 +35,23 @@ export default function Navigation() {
   const autoTradeEnabled = useStore((s) => s.autoTradeEnabled);
   const tweets = useStore((s) => s.tweets);
   const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
+  const apiCreditError = useStore((s) => s.apiCreditError);
+  const setApiCreditError = useStore((s) => s.setApiCreditError);
   const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
   const portfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 h-12 bg-surface border-b border-border flex items-center px-4 gap-6">
+    <>
+      {apiCreditError && (
+        <div className="fixed top-0 left-0 right-0 z-[60] flex items-center gap-3 px-4 py-2 bg-bear text-white text-xs font-medium">
+          <AlertTriangle size={13} className="flex-shrink-0" />
+          <span>Anthropic API credits exhausted — AI features are paused. Top up at <strong>console.anthropic.com</strong> then dismiss this banner.</span>
+          <button onClick={() => setApiCreditError(false)} className="ml-auto flex-shrink-0 hover:opacity-70 transition-opacity">
+            <X size={13} />
+          </button>
+        </div>
+      )}
+    <nav className={cn("fixed left-0 right-0 z-50 h-12 bg-surface border-b border-border flex items-center px-4 gap-6", apiCreditError ? "top-8" : "top-0")}>
       {/* Logo */}
       <div className="flex items-center gap-2 mr-4">
         <div className="w-2 h-2 rounded-full bg-bull animate-pulse-bull" />
@@ -107,5 +119,6 @@ export default function Navigation() {
         </div>
       </div>
     </nav>
+    </>
   );
 }

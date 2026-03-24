@@ -64,6 +64,10 @@ Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this e
     return NextResponse.json({ signal, usage: response.usage });
   } catch (err) {
     console.error("Claude API error:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/credit|balance|billing|quota/i.test(msg)) {
+      return NextResponse.json({ creditError: true, signal: null });
+    }
     return NextResponse.json({ signal: getMockSignal(ticker, price) });
   }
 }

@@ -99,6 +99,10 @@ Aim for 5–8 recommendations. Prioritize setups with clear catalysts and define
     return NextResponse.json({ ...result, usage: response.usage, webSearchUsed: true });
   } catch (webSearchErr) {
     console.error("Web search attempt failed, falling back:", webSearchErr);
+    const webSearchMsg = webSearchErr instanceof Error ? webSearchErr.message : String(webSearchErr);
+    if (/credit|balance|billing|quota/i.test(webSearchMsg)) {
+      return NextResponse.json({ creditError: true, error: webSearchMsg }, { status: 402 });
+    }
 
     // Fallback: Claude without web search (uses Polygon movers data + general knowledge)
     try {
@@ -122,8 +126,12 @@ Aim for 5–8 recommendations. Prioritize setups with clear catalysts and define
         webSearchUsed: false,
       });
     } catch (fallbackErr) {
+      const msg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      if (/credit|balance|billing|quota/i.test(msg)) {
+        return NextResponse.json({ creditError: true, error: msg }, { status: 402 });
+      }
       return NextResponse.json(
-        { error: `Discovery failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}` },
+        { error: `Discovery failed: ${msg}` },
         { status: 500 }
       );
     }
