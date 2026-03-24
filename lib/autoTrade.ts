@@ -59,17 +59,25 @@ export function useAutoTradeEngine() {
 
   const evaluateSignal = useCallback(
     async (ticker: string): Promise<AISignal | null> => {
-      // 1. Check if there is a recent signal already in the store (< 5 min old)
-      const FRESH_MS = 5 * 60 * 1000;
-      const existing = signals.find(
-        (s) => s.ticker === ticker && Date.now() - s.timestamp < FRESH_MS
+      // If we hold a position in this ticker, always get a fresh signal
+      // so the AI can recommend closing it — don't reuse stale BUY signals
+      const holdingPosition = useStore.getState().positions.some(
+        (p) => p.ticker === ticker && p.quantity > 0
       );
-      if (existing) return existing;
 
-      // 1b. Skip if this ticker returned HOLD recently (saves API credits)
-      const HOLD_TTL = 5 * 60 * 1000;
-      if (holdCache.current[ticker] && Date.now() - holdCache.current[ticker] < HOLD_TTL) {
-        return null;
+      if (!holdingPosition) {
+        // 1. Check if there is a recent signal already in the store (< 5 min old)
+        const FRESH_MS = 5 * 60 * 1000;
+        const existing = signals.find(
+          (s) => s.ticker === ticker && Date.now() - s.timestamp < FRESH_MS
+        );
+        if (existing) return existing;
+
+        // 1b. Skip if this ticker returned HOLD recently (saves API credits)
+        const HOLD_TTL = 5 * 60 * 1000;
+        if (holdCache.current[ticker] && Date.now() - holdCache.current[ticker] < HOLD_TTL) {
+          return null;
+        }
       }
 
       // 2. No fresh signal — call Claude, but only if API key is present
@@ -206,7 +214,159 @@ export function useAutoTradeEngine() {
       return;
     }
 
-    // Daily circuit breakers
+    const { liveAccount } = useStore.getState();
+
+    // ──────────────────────────────────────────────────────────────
+    // PHASE 1: Close existing positions that should be sold.
+    // This runs BEFORE daily-limit / funds checks — you must always
+    // be able to exit a position regardless of those gates.
+    // ──────────────────────────────────────────────────────────────
+    const heldPositions = positions.filter((p) => p.quantity > 0);
+
+    // In live mode, also fetch actual Alpaca positions for price + qty truth
+    let alpacaPositions: Array<{ symbol: string; qty: number; currentPrice: number; unrealizedPnl: number; side: string; avgEntryPrice: number }> = [];
+    if (isLive && alpacaLiveKey && alpacaLiveSecret) {
+      try {
+        const res = await fetch(
+          `/api/trade/account?mode=live&apiKey=${encodeURIComponent(alpacaLiveKey)}&apiSecret=${encodeURIComponent(alpacaLiveSecret)}`
+        );
+        const data = await res.json();
+        if (data.positions) alpacaPositions = data.positions;
+      } catch {}
+    }
+
+    for (const pos of heldPositions) {
+      if (pos.side !== "LONG") continue; // only handle closing longs for now
+
+      // Get current price from Alpaca positions (live) or local quotes
+      const alpPos = alpacaPositions.find((a) => a.symbol === pos.ticker);
+      const currentPrice = alpPos?.currentPrice ?? useStore.getState().quotes[pos.ticker]?.price ?? 0;
+      const unrealizedPnl = alpPos ? alpPos.unrealizedPnl : (currentPrice - pos.entryPrice) * pos.quantity;
+      const pnlPct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
+
+      // Determine the actual qty on Alpaca (may differ from local if partially filled)
+      const liveQty = alpPos?.qty ?? pos.quantity;
+
+      // Simple rule-based sell triggers that don't need the AI:
+      let sellReason: string | null = null;
+
+      // Stop-loss
+      if (pos.stopLoss && currentPrice > 0 && currentPrice <= pos.stopLoss) {
+        sellReason = `Stop-loss hit @ $${currentPrice.toFixed(2)} (stop $${pos.stopLoss.toFixed(2)})`;
+      }
+      // Take-profit
+      else if (pos.takeProfit && currentPrice > 0 && currentPrice >= pos.takeProfit) {
+        sellReason = `Take-profit hit @ $${currentPrice.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
+      }
+      // Time-based exit
+      else if (settings.maxPositionMinutes > 0) {
+        const ageMin = (Date.now() - pos.entryTime) / 60000;
+        if (ageMin >= settings.maxPositionMinutes) {
+          sellReason = `Time exit after ${ageMin.toFixed(0)} min (max ${settings.maxPositionMinutes})`;
+        }
+      }
+
+      // If no rule-based trigger, ask the AI (if we have data)
+      if (!sellReason) {
+        const quote = useStore.getState().quotes[pos.ticker];
+        const candles = useStore.getState().candles[pos.ticker];
+        // Can call AI even without full candle data — send what we have
+        if (anthropicKey && (quote || currentPrice > 0)) {
+          const ind = candles?.length ? computeIndicators(candles) : {};
+          const candles15m = candles?.length ? aggregateCandles(candles, 3) : [];
+          const ind15m = candles15m.length ? computeIndicators(candles15m) : {};
+          const trend15m = ind15m.macd !== undefined && ind15m.macdSignal !== undefined
+            ? ind15m.macd > ind15m.macdSignal ? "bullish" : ind15m.macd < ind15m.macdSignal ? "bearish" : "neutral"
+            : "N/A";
+
+          try {
+            const res = await fetch("/api/ai/analyze", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ticker: pos.ticker,
+                price: currentPrice || quote?.price || pos.entryPrice,
+                vwap: ind.vwap,
+                rsi: ind.rsi,
+                macd: ind.macd,
+                macdSignal: ind.macdSignal,
+                volume: quote?.volume,
+                relVolume: ind.relVolume,
+                prevHigh: quote?.high,
+                prevLow: quote?.low,
+                sma20: ind.sma20,
+                ema9: ind.ema9,
+                bbUpper: ind.bbUpper,
+                bbLower: ind.bbLower,
+                news: null,
+                xSentiment: null,
+                apiKey: anthropicKey,
+                trend15m,
+                rsi15m: ind15m.rsi,
+                macd15m: trend15m,
+                recentWinRate: 0,
+                recentTradeCount: 0,
+                allowShorts: settings.allowShorts,
+                currentPosition: {
+                  side: pos.side,
+                  qty: liveQty,
+                  entryPrice: pos.entryPrice,
+                  pnl: unrealizedPnl,
+                },
+              }),
+            });
+            const data = await res.json();
+            if (data.usage) recordAnthropicUsage(data.usage.input_tokens ?? 0, data.usage.output_tokens ?? 0);
+            if (data.signal?.signal === "SELL") {
+              sellReason = `AI recommends exit: ${data.signal.reason}`;
+            }
+          } catch {}
+        }
+      }
+
+      if (sellReason) {
+        const closePrice = currentPrice || pos.currentPrice;
+        if (isLive) {
+          try {
+            const res = await fetch("/api/trade/order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mode: "live",
+                apiKey: alpacaLiveKey,
+                apiSecret: alpacaLiveSecret,
+                symbol: pos.ticker,
+                side: "sell",
+                type: "market",
+                qty: +liveQty.toFixed(4),
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) {
+              addAutoTradeLog({ ticker: pos.ticker, decision: "BLOCKED", reason: `Failed to close: ${data.error ?? "unknown"}` });
+              continue;
+            }
+          } catch (err) {
+            addAutoTradeLog({ ticker: pos.ticker, decision: "BLOCKED", reason: `Network error closing: ${err instanceof Error ? err.message : "unknown"}` });
+            continue;
+          }
+        }
+        executeOrder({ ticker: pos.ticker, side: "SELL", type: "MARKET", quantity: pos.quantity, price: closePrice });
+        lastTradeTime.current[pos.ticker] = Date.now();
+        addAutoTradeLog({
+          ticker: pos.ticker,
+          decision: "EXECUTED",
+          reason: `CLOSED: ${sellReason}`,
+          sharesQty: liveQty,
+        });
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // PHASE 2: Open new positions (subject to daily limits / funds)
+    // ──────────────────────────────────────────────────────────────
+
+    // Daily circuit breakers — only gate NEW opens, not closes
     if (autoTradeDailyCount >= settings.maxDailyTrades) return;
     if (autoTradeDailyPnl <= -settings.maxDailyLoss) {
       setAutoTradeEnabled(false);
@@ -218,27 +378,19 @@ export function useAutoTradeEngine() {
       return;
     }
 
-    const { liveAccount } = useStore.getState();
-
-    // Don't trade live until account data has loaded — avoids sizing off paper balance
-    if (isLive && !liveAccount) {
-      // Don't log every cycle — just silently wait
-      return;
-    }
+    // Don't open new live positions until account data has loaded
+    if (isLive && !liveAccount) return;
 
     const portfolioValue = isLive && liveAccount
       ? Math.max(liveAccount.portfolioValue, liveAccount.equity, liveAccount.cash)
       : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
-    // For paper cash accounts, subtract proceeds that haven't settled yet
     const unsettledTotal = (!isLive && cashAccount)
       ? unsettledFunds.filter((f) => f.settlesAt > Date.now()).reduce((sum, f) => sum + f.amount, 0)
       : 0;
-    // Use the best available cash figure from Alpaca (buying power, cash, or equity)
     const availableCash = isLive && liveAccount
       ? Math.max(liveAccount.buyingPower, liveAccount.cash, 0)
       : cashBalance - unsettledTotal;
 
-    // Out-of-funds check — only for paper mode. In live mode, let Alpaca reject the order.
     if (!isLive && availableCash <= 0) {
       addAutoTradeLog({
         ticker: "SYSTEM",
@@ -253,68 +405,14 @@ export function useAutoTradeEngine() {
       const cooldownMs = settings.cooldownMinutes * 60 * 1000;
       if (Date.now() - (lastTradeTime.current[ticker] ?? 0) < cooldownMs) continue;
 
+      // Skip tickers we already hold — closing was handled in Phase 1
+      if (positions.some((p) => p.ticker === ticker && p.quantity > 0)) continue;
+
       const signal = await evaluateSignal(ticker);
       if (!signal) continue;
 
       if (signal.signal === "HOLD") {
         addAutoTradeLog({ ticker, decision: "SKIPPED", reason: "Signal is HOLD — no trade.", signal });
-        continue;
-      }
-
-      // Check if we hold a position in this ticker
-      const existingLong = positions.find((p) => p.ticker === ticker && p.quantity > 0 && p.side === "LONG");
-      const existingShort = positions.find((p) => p.ticker === ticker && p.quantity > 0 && p.side === "SHORT");
-
-      // SELL signal + holding LONG = close the position (NOT shorting)
-      if (signal.signal === "SELL" && existingLong) {
-        if (signal.confidence < settings.confidenceThreshold) {
-          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `SELL-to-close confidence ${(signal.confidence * 100).toFixed(0)}% below threshold.`, signal });
-          continue;
-        }
-        const closePrice = useStore.getState().quotes[ticker]?.price ?? signal.entry;
-        if (isLive) {
-          const { alpacaLiveKey: liveKey, alpacaLiveSecret: liveSecret } = useStore.getState();
-          try {
-            const res = await fetch("/api/trade/order", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                mode: "live",
-                apiKey: liveKey,
-                apiSecret: liveSecret,
-                symbol: ticker,
-                side: "sell",
-                type: "market",
-                qty: +existingLong.quantity.toFixed(4),
-              }),
-            });
-            const data = await res.json();
-            if (!res.ok || data.error) {
-              addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Failed to close live position: ${data.error ?? "unknown"}`, signal });
-              continue;
-            }
-          } catch (err) {
-            addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Network error closing position: ${err instanceof Error ? err.message : "unknown"}`, signal });
-            continue;
-          }
-        }
-        executeOrder({ ticker, side: "SELL", type: "MARKET", quantity: existingLong.quantity, price: closePrice });
-        lastTradeTime.current[ticker] = Date.now();
-        addAutoTradeLog({
-          ticker,
-          decision: "EXECUTED",
-          reason: `SELL-to-close ${existingLong.quantity}sh @ $${closePrice.toFixed(2)} | ${signal.reason}`,
-          signal,
-          sharesQty: existingLong.quantity,
-        });
-        continue;
-      }
-
-      // Skip if already holding this ticker on the same side as the signal
-      const holdingSameSide =
-        (signal.signal === "BUY" && existingLong) || (signal.signal === "SELL" && existingShort);
-      if (holdingSameSide) {
-        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Already holding ${signal.signal === "BUY" ? "LONG" : "SHORT"} position.`, signal });
         continue;
       }
 
@@ -338,12 +436,12 @@ export function useAutoTradeEngine() {
         continue;
       }
 
-      // Shorts gate — only blocks opening NEW short positions, not closing longs
+      // Shorts gate
       if (signal.signal === "SELL" && !settings.allowShorts) {
         addAutoTradeLog({
           ticker,
           decision: "SKIPPED",
-          reason: "SELL signal skipped — no position to close and shorts disabled.",
+          reason: "SELL signal skipped — shorts disabled.",
           signal,
         });
         continue;
@@ -481,7 +579,7 @@ export function useAutoTradeEngine() {
     autoTradeEnabled, settings, autoTradeDailyCount, autoTradeDailyPnl,
     watchlist, cashBalance, positions, tweets, evaluateSignal,
     executeOrder, addAutoTradeLog, setAutoTradeEnabled, setAutoTradeSettings, setOutOfFundsError,
-    unsettledFunds, cashAccount,
+    unsettledFunds, cashAccount, anthropicKey, recordAnthropicUsage,
   ]);
 
   const monitorPositions = useCallback(async () => {
