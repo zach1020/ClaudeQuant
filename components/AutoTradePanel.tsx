@@ -1,6 +1,5 @@
 "use client";
 import { useStore } from "@/lib/store";
-import { useAutoTradeEngine } from "@/lib/autoTrade";
 import { cn, isMarketOpen } from "@/lib/utils";
 import {
   Bot, Power, PowerOff, CheckCircle2, XCircle, Clock, ShieldAlert,
@@ -10,9 +9,6 @@ import { useState } from "react";
 import type { AutoTradeLog } from "@/lib/types";
 
 export default function AutoTradePanel() {
-  // Mount the engine — it hooks into the store and auto-fires
-  useAutoTradeEngine();
-
   const autoTradeEnabled = useStore((s) => s.autoTradeEnabled);
   const setAutoTradeEnabled = useStore((s) => s.setAutoTradeEnabled);
   const settings = useStore((s) => s.autoTradeSettings);
