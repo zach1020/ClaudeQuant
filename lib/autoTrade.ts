@@ -260,6 +260,7 @@ export function useAutoTradeEngine() {
             quantity: shares,
             price: signal.entry,
             stopPrice: signal.stop_loss,
+            takeProfitPrice: signal.target,
           });
         } catch (err) {
           addAutoTradeLog({
@@ -278,6 +279,7 @@ export function useAutoTradeEngine() {
           quantity: shares,
           price: signal.entry,
           stopPrice: signal.stop_loss,
+          takeProfitPrice: signal.target,
         });
       }
 
@@ -298,6 +300,40 @@ export function useAutoTradeEngine() {
     executeOrder, addAutoTradeLog, setAutoTradeEnabled,
   ]);
 
+  const monitorPositions = useCallback(() => {
+    const { positions, quotes } = useStore.getState();
+    for (const pos of positions) {
+      if (pos.quantity <= 0) continue;
+      const price = quotes[pos.ticker]?.price ?? pos.currentPrice;
+
+      let reason: string | null = null;
+      if (pos.side === "LONG") {
+        if (pos.stopLoss && price <= pos.stopLoss) {
+          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${pos.stopLoss.toFixed(2)})`;
+        } else if (pos.takeProfit && price >= pos.takeProfit) {
+          reason = `Take-profit triggered @ $${price.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
+        }
+      } else {
+        if (pos.stopLoss && price >= pos.stopLoss) {
+          reason = `Stop-loss triggered @ $${price.toFixed(2)} (stop $${pos.stopLoss.toFixed(2)})`;
+        } else if (pos.takeProfit && price <= pos.takeProfit) {
+          reason = `Take-profit triggered @ $${price.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
+        }
+      }
+
+      if (reason) {
+        executeOrder({
+          ticker: pos.ticker,
+          side: pos.side === "LONG" ? "SELL" : "BUY",
+          type: "MARKET",
+          quantity: pos.quantity,
+          price,
+        });
+        addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason });
+      }
+    }
+  }, [executeOrder, addAutoTradeLog]);
+
   useEffect(() => {
     if (!autoTradeEnabled) return;
     // Run every 60s (not 30s) — and only fires Claude if no fresh signal exists
@@ -305,4 +341,11 @@ export function useAutoTradeEngine() {
     evaluateAndTrade(); // run once immediately on enable
     return () => clearInterval(interval);
   }, [autoTradeEnabled, evaluateAndTrade]);
+
+  useEffect(() => {
+    if (!autoTradeEnabled) return;
+    // Check stop-loss / take-profit every 15 seconds
+    const interval = setInterval(monitorPositions, 15_000);
+    return () => clearInterval(interval);
+  }, [autoTradeEnabled, monitorPositions]);
 }

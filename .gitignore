@@ -26,3 +26,6 @@ tsconfig.tsbuildinfo
 
 # Vercel
 .vercel
+
+# Electron
+dist/

@@ -84,6 +84,10 @@ interface AppState {
   // API usage & cost tracking
   apiUsage: ApiUsageState;
 
+  // Notifications
+  apiCreditError: boolean;
+  setApiCreditError: (v: boolean) => void;
+
   // Actions — settings
   setApiKeys: (keys: Partial<{ polygonApiKey: string; alpacaKey: string; alpacaSecret: string; alpacaLiveKey: string; alpacaLiveSecret: string; anthropicKey: string }>) => void;
   setAlpacaMode: (mode: "paper" | "live") => void;
@@ -195,6 +199,10 @@ export const useStore = create<AppState>()(
       // API usage
       apiUsage: freshApiUsage(),
 
+      // Notifications
+      apiCreditError: false,
+      setApiCreditError: (v) => set({ apiCreditError: v }),
+
       setApiKeys: (keys) => set((s) => ({ ...s, ...keys })),
 
       addToWatchlist: (ticker) =>
@@ -300,6 +308,7 @@ export const useStore = create<AppState>()(
               entryTime: Date.now(),
               currentPrice: fillPrice,
               stopLoss: orderData.stopPrice,
+              takeProfit: orderData.takeProfitPrice,
               unrealizedPnl: 0,
               unrealizedPnlPct: 0,
             };

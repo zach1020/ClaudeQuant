@@ -71,6 +71,7 @@ export interface Order {
   quantity: number;
   price?: number;
   stopPrice?: number;
+  takeProfitPrice?: number;
   status: "PENDING" | "FILLED" | "CANCELLED";
   filledAt?: number;
   filledPrice?: number;

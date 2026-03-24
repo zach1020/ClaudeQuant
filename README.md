@@ -2,7 +2,29 @@
 
 An AI-assisted intraday trading platform powered by Claude. Scans the market for setups, generates real-time trade signals, tracks paper and live positions, and can autonomously discover and execute trades.
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FYOUR_USERNAME%2FYOUR_REPO)
+
+> **No server API keys required.** Enter your own keys in **Settings** after deploying — they stay in your browser only.
+
 ![QuantDash Dashboard](docs/screenshot.png)
+
+---
+
+## Quick Start (2 options)
+
+### Option A — Deploy to Vercel (recommended, no setup)
+1. Click the **Deploy with Vercel** button above
+2. Follow the prompts to clone + deploy (free Vercel account required)
+3. Open the app → go to **Settings** → enter your API keys
+
+### Option B — Run locally
+```bash
+git clone <repo-url>
+cd day-trading-app
+npm install
+npm run dev
+# Open http://localhost:3000 → Settings → enter your API keys
+```
 
 ---
 
