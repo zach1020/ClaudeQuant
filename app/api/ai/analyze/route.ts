@@ -57,7 +57,7 @@ ${allowShorts === false && !currentPosition ? "IMPORTANT: No position held and s
       model: "claude-sonnet-4-6",
       max_tokens: 512,
       system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. ${currentPosition
-        ? `The user holds a ${currentPosition.side} position. SELL means EXIT/CLOSE this existing position — it is NOT short selling. If the setup is turning against the position, recommend SELL to cut losses or lock profit. If the position is still favorable, return HOLD to keep it or BUY to add.`
+        ? `The user holds a ${currentPosition.side} position at $${currentPosition.entryPrice.toFixed(2)} (P&L: ${currentPosition.pnl >= 0 ? "+" : ""}$${currentPosition.pnl.toFixed(2)}). SELL means EXIT/CLOSE this existing position — it is NOT short selling. Be decisive about cutting losses — if indicators are bearish or the position is losing money with no clear reversal signal, return SELL immediately. Do not hold losing positions hoping they recover. Return SELL to exit, HOLD only if indicators clearly support a reversal, or BUY to add to a winning position.`
         : allowShorts === false
           ? "No position is held and short selling is DISABLED — only return BUY or HOLD. Return BUY whenever there is any bullish lean in the data. Return HOLD for bearish or genuinely flat conditions."
           : "Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge. If there is any directional lean, commit to BUY or SELL."

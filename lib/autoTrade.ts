@@ -221,10 +221,8 @@ export function useAutoTradeEngine() {
     // This runs BEFORE daily-limit / funds checks — you must always
     // be able to exit a position regardless of those gates.
     // ──────────────────────────────────────────────────────────────
-    const heldPositions = positions.filter((p) => p.quantity > 0);
-
-    // In live mode, also fetch actual Alpaca positions for price + qty truth
-    let alpacaPositions: Array<{ symbol: string; qty: number; currentPrice: number; unrealizedPnl: number; side: string; avgEntryPrice: number }> = [];
+    // In live mode, fetch actual Alpaca positions — they are the source of truth
+    let alpacaPositions: Array<{ symbol: string; qty: number; currentPrice: number; unrealizedPnl: number; unrealizedPnlPct: number; side: string; avgEntryPrice: number }> = [];
     if (isLive && alpacaLiveKey && alpacaLiveSecret) {
       try {
         const res = await fetch(
@@ -235,17 +233,55 @@ export function useAutoTradeEngine() {
       } catch {}
     }
 
+    // Build a unified list of held positions
+    // Live mode: use Alpaca positions as truth. Paper mode: use local store.
+    const heldPositions: Array<{
+      ticker: string; side: "LONG" | "SHORT"; quantity: number; entryPrice: number;
+      currentPrice: number; unrealizedPnl: number; pnlPct: number;
+      stopLoss?: number; takeProfit?: number; entryTime: number;
+    }> = [];
+
+    if (isLive) {
+      for (const ap of alpacaPositions) {
+        const localPos = positions.find((p) => p.ticker === ap.symbol && p.quantity > 0);
+        heldPositions.push({
+          ticker: ap.symbol,
+          side: ap.side === "short" ? "SHORT" : "LONG",
+          quantity: ap.qty,
+          entryPrice: ap.avgEntryPrice,
+          currentPrice: ap.currentPrice,
+          unrealizedPnl: ap.unrealizedPnl,
+          pnlPct: ap.unrealizedPnlPct,
+          stopLoss: localPos?.stopLoss,
+          takeProfit: localPos?.takeProfit,
+          entryTime: localPos?.entryTime ?? Date.now() - 60000, // fallback: assume 1 min ago
+        });
+      }
+    } else {
+      for (const p of positions) {
+        if (p.quantity <= 0) continue;
+        const currentPrice = useStore.getState().quotes[p.ticker]?.price ?? p.currentPrice;
+        heldPositions.push({
+          ticker: p.ticker,
+          side: p.side,
+          quantity: p.quantity,
+          entryPrice: p.entryPrice,
+          currentPrice,
+          unrealizedPnl: (currentPrice - p.entryPrice) * p.quantity * (p.side === "LONG" ? 1 : -1),
+          pnlPct: p.entryPrice > 0 ? ((currentPrice - p.entryPrice) / p.entryPrice) * 100 * (p.side === "LONG" ? 1 : -1) : 0,
+          stopLoss: p.stopLoss,
+          takeProfit: p.takeProfit,
+          entryTime: p.entryTime,
+        });
+      }
+    }
+
     for (const pos of heldPositions) {
-      if (pos.side !== "LONG") continue; // only handle closing longs for now
+      if (pos.side !== "LONG") continue;
 
-      // Get current price from Alpaca positions (live) or local quotes
-      const alpPos = alpacaPositions.find((a) => a.symbol === pos.ticker);
-      const currentPrice = alpPos?.currentPrice ?? useStore.getState().quotes[pos.ticker]?.price ?? 0;
-      const unrealizedPnl = alpPos ? alpPos.unrealizedPnl : (currentPrice - pos.entryPrice) * pos.quantity;
-      const pnlPct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
-
-      // Determine the actual qty on Alpaca (may differ from local if partially filled)
-      const liveQty = alpPos?.qty ?? pos.quantity;
+      const currentPrice = pos.currentPrice;
+      const pnlPct = pos.pnlPct;
+      const liveQty = pos.quantity;
 
       // Simple rule-based sell triggers that don't need the AI:
       let sellReason: string | null = null;
@@ -257,6 +293,10 @@ export function useAutoTradeEngine() {
       // Take-profit
       else if (pos.takeProfit && currentPrice > 0 && currentPrice >= pos.takeProfit) {
         sellReason = `Take-profit hit @ $${currentPrice.toFixed(2)} (target $${pos.takeProfit.toFixed(2)})`;
+      }
+      // Max loss — hard cut at 3% loss, no AI needed
+      else if (currentPrice > 0 && pnlPct <= -3) {
+        sellReason = `Max loss cut @ $${currentPrice.toFixed(2)} (${pnlPct.toFixed(1)}% loss, entry $${pos.entryPrice.toFixed(2)})`;
       }
       // Time-based exit
       else if (settings.maxPositionMinutes > 0) {
@@ -311,7 +351,7 @@ export function useAutoTradeEngine() {
                   side: pos.side,
                   qty: liveQty,
                   entryPrice: pos.entryPrice,
-                  pnl: unrealizedPnl,
+                  pnl: pos.unrealizedPnl,
                 },
               }),
             });
@@ -325,10 +365,11 @@ export function useAutoTradeEngine() {
       }
 
       if (sellReason) {
-        const closePrice = currentPrice || pos.currentPrice;
+        const closePrice = currentPrice || pos.entryPrice;
         if (isLive) {
           try {
-            const res = await fetch("/api/trade/order", {
+            // Use Alpaca's close-position endpoint — no qty needed, closes entire position
+            const res = await fetch("/api/trade/close-position", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -336,9 +377,6 @@ export function useAutoTradeEngine() {
                 apiKey: alpacaLiveKey,
                 apiSecret: alpacaLiveSecret,
                 symbol: pos.ticker,
-                side: "sell",
-                type: "market",
-                qty: +liveQty.toFixed(4),
               }),
             });
             const data = await res.json();
@@ -406,7 +444,10 @@ export function useAutoTradeEngine() {
       if (Date.now() - (lastTradeTime.current[ticker] ?? 0) < cooldownMs) continue;
 
       // Skip tickers we already hold — closing was handled in Phase 1
-      if (positions.some((p) => p.ticker === ticker && p.quantity > 0)) continue;
+      const stillHeld = isLive
+        ? alpacaPositions.some((a) => a.symbol === ticker)
+        : positions.some((p) => p.ticker === ticker && p.quantity > 0);
+      if (stillHeld) continue;
 
       const signal = await evaluateSignal(ticker);
       if (!signal) continue;
@@ -606,11 +647,11 @@ export function useAutoTradeEngine() {
       }
     }
 
-    // Helper: submit a close order via Alpaca API in live mode
-    const submitLiveClose = async (ticker: string, side: string, qty: number): Promise<boolean> => {
+    // Helper: close a position via Alpaca's close-position endpoint (no qty needed)
+    const submitLiveClose = async (ticker: string, _side: string, _qty: number): Promise<boolean> => {
       if (!isLive) return true; // paper mode — local executeOrder handles it
       try {
-        const res = await fetch("/api/trade/order", {
+        const res = await fetch("/api/trade/close-position", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -618,9 +659,6 @@ export function useAutoTradeEngine() {
             apiKey: alpacaLiveKey,
             apiSecret: alpacaLiveSecret,
             symbol: ticker,
-            side: side.toLowerCase(),
-            type: "market",
-            qty: +qty.toFixed(4),
           }),
         });
         const data = await res.json();
