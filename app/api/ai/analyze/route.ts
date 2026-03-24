@@ -5,7 +5,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { ticker, price, vwap, rsi, macd, macdSignal, volume, relVolume,
     prevHigh, prevLow, sma20, ema9, bbUpper, bbLower, news, xSentiment, apiKey,
-    trend15m, rsi15m, macd15m, recentWinRate, recentTradeCount, allowShorts } = body;
+    trend15m, rsi15m, macd15m, recentWinRate, recentTradeCount, allowShorts,
+    currentPosition } = body;
 
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!key) {
@@ -31,8 +32,9 @@ Recent news: ${news ?? "none"}
 X/Twitter sentiment: ${xSentiment ?? "not available"}
 15m Trend: ${trend15m ?? "N/A"} | 15m RSI: ${rsi15m?.toFixed(1) ?? "N/A"} | 15m MACD: ${macd15m ?? "N/A"}
 Recent performance: ${recentTradeCount > 0 ? `${recentTradeCount} trades, ${(recentWinRate * 100).toFixed(0)}% win rate today` : "No trades yet today"}
+${currentPosition ? `CURRENT POSITION: ${currentPosition.side} ${currentPosition.qty} shares @ $${currentPosition.entryPrice.toFixed(2)} (unrealized P&L: ${currentPosition.pnl >= 0 ? "+" : ""}$${currentPosition.pnl.toFixed(2)})` : `CURRENT POSITION: None (flat)`}
 
-Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this exact structure (or null if no trade):
+Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this exact structure:
 {
   "ticker": "${ticker}",
   "signal": "BUY" | "SELL" | "HOLD",
@@ -47,15 +49,18 @@ Analyze this intraday setup for ${ticker}. Return ONLY a JSON object with this e
 }
 For BUY signals: 15m trend should be bullish or neutral (not strongly bearish) for confirmation.
 For SELL signals: 15m trend should be bearish or neutral (not strongly bullish) for confirmation.
-${allowShorts === false ? "IMPORTANT: Short selling is disabled on this account. Do NOT return SELL signals. Only return BUY or HOLD." : ""}`;
+${currentPosition ? `You currently hold a ${currentPosition.side} position. SELL means close/exit this position — it is NOT short selling.` : ""}
+${allowShorts === false && !currentPosition ? "IMPORTANT: No position held and short selling is disabled. Only return BUY or HOLD." : ""}`;
 
   try {
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 512,
-      system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. ${allowShorts === false
-        ? "Short selling is DISABLED — only return BUY or HOLD. Return BUY whenever there is any bullish lean in the data. Return HOLD for bearish or genuinely flat conditions."
-        : "Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge. If there is any directional lean, commit to BUY or SELL."
+      system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. ${currentPosition
+        ? `The user holds a ${currentPosition.side} position. SELL means EXIT/CLOSE this existing position — it is NOT short selling. If the setup is turning against the position, recommend SELL to cut losses or lock profit. If the position is still favorable, return HOLD to keep it or BUY to add.`
+        : allowShorts === false
+          ? "No position is held and short selling is DISABLED — only return BUY or HOLD. Return BUY whenever there is any bullish lean in the data. Return HOLD for bearish or genuinely flat conditions."
+          : "Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge. If there is any directional lean, commit to BUY or SELL."
       } Set confidence based on how many indicators agree: 0.60–0.69 weak, 0.70–0.79 moderate, 0.80+ strong. Never provide financial advice. This is for educational/simulation purposes only.`,
       messages: [{ role: "user", content: prompt }],
     });

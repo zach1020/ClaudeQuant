@@ -110,6 +110,19 @@ export function useAutoTradeEngine() {
             .join(" | ")
         : null;
 
+      // Check if we already hold a position in this ticker
+      const existingPosition = useStore.getState().positions.find(
+        (p) => p.ticker === ticker && p.quantity > 0
+      );
+      const currentPosition = existingPosition
+        ? {
+            side: existingPosition.side,
+            qty: existingPosition.quantity,
+            entryPrice: existingPosition.entryPrice,
+            pnl: existingPosition.unrealizedPnl,
+          }
+        : null;
+
       try {
         const res = await fetch("/api/ai/analyze", {
           method: "POST",
@@ -138,6 +151,7 @@ export function useAutoTradeEngine() {
             recentWinRate,
             recentTradeCount,
             allowShorts: settings.allowShorts,
+            currentPosition,
           }),
         });
         const data = await res.json();
@@ -247,14 +261,60 @@ export function useAutoTradeEngine() {
         continue;
       }
 
+      // Check if we hold a position in this ticker
+      const existingLong = positions.find((p) => p.ticker === ticker && p.quantity > 0 && p.side === "LONG");
+      const existingShort = positions.find((p) => p.ticker === ticker && p.quantity > 0 && p.side === "SHORT");
+
+      // SELL signal + holding LONG = close the position (NOT shorting)
+      if (signal.signal === "SELL" && existingLong) {
+        if (signal.confidence < settings.confidenceThreshold) {
+          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `SELL-to-close confidence ${(signal.confidence * 100).toFixed(0)}% below threshold.`, signal });
+          continue;
+        }
+        const closePrice = useStore.getState().quotes[ticker]?.price ?? signal.entry;
+        if (isLive) {
+          const { alpacaLiveKey: liveKey, alpacaLiveSecret: liveSecret } = useStore.getState();
+          try {
+            const res = await fetch("/api/trade/order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mode: "live",
+                apiKey: liveKey,
+                apiSecret: liveSecret,
+                symbol: ticker,
+                side: "sell",
+                type: "market",
+                qty: +existingLong.quantity.toFixed(4),
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) {
+              addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Failed to close live position: ${data.error ?? "unknown"}`, signal });
+              continue;
+            }
+          } catch (err) {
+            addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Network error closing position: ${err instanceof Error ? err.message : "unknown"}`, signal });
+            continue;
+          }
+        }
+        executeOrder({ ticker, side: "SELL", type: "MARKET", quantity: existingLong.quantity, price: closePrice });
+        lastTradeTime.current[ticker] = Date.now();
+        addAutoTradeLog({
+          ticker,
+          decision: "EXECUTED",
+          reason: `SELL-to-close ${existingLong.quantity}sh @ $${closePrice.toFixed(2)} | ${signal.reason}`,
+          signal,
+          sharesQty: existingLong.quantity,
+        });
+        continue;
+      }
+
       // Skip if already holding this ticker on the same side as the signal
-      const holdingSameSide = positions.find((p) =>
-        p.ticker === ticker &&
-        p.quantity > 0 &&
-        ((signal.signal === "BUY" && p.side === "LONG") || (signal.signal === "SELL" && p.side === "SHORT"))
-      );
+      const holdingSameSide =
+        (signal.signal === "BUY" && existingLong) || (signal.signal === "SELL" && existingShort);
       if (holdingSameSide) {
-        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Already holding ${holdingSameSide.side} position.`, signal });
+        addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Already holding ${signal.signal === "BUY" ? "LONG" : "SHORT"} position.`, signal });
         continue;
       }
 
@@ -278,12 +338,12 @@ export function useAutoTradeEngine() {
         continue;
       }
 
-      // Shorts gate
+      // Shorts gate — only blocks opening NEW short positions, not closing longs
       if (signal.signal === "SELL" && !settings.allowShorts) {
         addAutoTradeLog({
           ticker,
           decision: "SKIPPED",
-          reason: "SELL signal skipped — shorts disabled.",
+          reason: "SELL signal skipped — no position to close and shorts disabled.",
           signal,
         });
         continue;
@@ -424,10 +484,58 @@ export function useAutoTradeEngine() {
     unsettledFunds, cashAccount,
   ]);
 
-  const monitorPositions = useCallback(() => {
+  const monitorPositions = useCallback(async () => {
     sweepSettledFunds();
-    const { positions, quotes } = useStore.getState();
+    const { positions, quotes, alpacaMode, alpacaLiveKey, alpacaLiveSecret } = useStore.getState();
+    const isLive = alpacaMode === "live";
     const now = Date.now();
+
+    // In live mode, fetch fresh prices from Alpaca positions endpoint
+    let livePrices: Record<string, number> = {};
+    if (isLive && alpacaLiveKey && alpacaLiveSecret) {
+      try {
+        const res = await fetch(
+          `/api/trade/account?mode=live&apiKey=${encodeURIComponent(alpacaLiveKey)}&apiSecret=${encodeURIComponent(alpacaLiveSecret)}`
+        );
+        const data = await res.json();
+        if (data.positions) {
+          for (const p of data.positions) {
+            livePrices[p.symbol] = p.currentPrice;
+          }
+        }
+      } catch {
+        // Fall back to local quotes/entry price
+      }
+    }
+
+    // Helper: submit a close order via Alpaca API in live mode
+    const submitLiveClose = async (ticker: string, side: string, qty: number): Promise<boolean> => {
+      if (!isLive) return true; // paper mode — local executeOrder handles it
+      try {
+        const res = await fetch("/api/trade/order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "live",
+            apiKey: alpacaLiveKey,
+            apiSecret: alpacaLiveSecret,
+            symbol: ticker,
+            side: side.toLowerCase(),
+            type: "market",
+            qty: +qty.toFixed(4),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Failed to close live position: ${data.error ?? "unknown error"}` });
+          return false;
+        }
+        return true;
+      } catch (err) {
+        addAutoTradeLog({ ticker, decision: "BLOCKED", reason: `Network error closing live position: ${err instanceof Error ? err.message : "unknown"}` });
+        return false;
+      }
+    };
 
     // End-of-day close: force-close all positions 15 min before 4pm ET
     const et = new Date(now);
@@ -437,12 +545,17 @@ export function useAutoTradeEngine() {
 
     for (const pos of positions) {
       if (pos.quantity <= 0) continue;
-      const price = quotes[pos.ticker]?.price ?? pos.currentPrice;
+      // Price priority: live Alpaca price > local quotes > entry price
+      const price = livePrices[pos.ticker] ?? quotes[pos.ticker]?.price ?? pos.currentPrice;
+      const closeSide = pos.side === "LONG" ? "SELL" : "BUY";
 
       // End-of-day: close everything
       if (isEodClose) {
-        executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
-        addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `End-of-day close @ $${price.toFixed(2)} (3:45 PM ET cutoff).` });
+        const ok = await submitLiveClose(pos.ticker, closeSide, pos.quantity);
+        if (ok) {
+          executeOrder({ ticker: pos.ticker, side: closeSide, type: "MARKET", quantity: pos.quantity, price });
+          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `End-of-day close @ $${price.toFixed(2)} (3:45 PM ET cutoff).` });
+        }
         continue;
       }
 
@@ -450,8 +563,11 @@ export function useAutoTradeEngine() {
       if (settings.maxPositionMinutes > 0) {
         const ageMinutes = (now - pos.entryTime) / 60000;
         if (ageMinutes >= settings.maxPositionMinutes) {
-          executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
-          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Time-based exit after ${ageMinutes.toFixed(0)} min (max ${settings.maxPositionMinutes} min).` });
+          const ok = await submitLiveClose(pos.ticker, closeSide, pos.quantity);
+          if (ok) {
+            executeOrder({ ticker: pos.ticker, side: closeSide, type: "MARKET", quantity: pos.quantity, price });
+            addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Time-based exit after ${ageMinutes.toFixed(0)} min (max ${settings.maxPositionMinutes} min).` });
+          }
           continue;
         }
       }
@@ -463,7 +579,6 @@ export function useAutoTradeEngine() {
         if (pos.side === "LONG") {
           const trailedStop = price * (1 - trailFactor);
           if (trailedStop > (pos.trailingStop ?? pos.stopLoss ?? 0)) {
-            // Update trailing stop in store
             useStore.setState((s) => ({
               positions: s.positions.map((p) =>
                 p.id === pos.id ? { ...p, trailingStop: trailedStop } : p
@@ -496,16 +611,18 @@ export function useAutoTradeEngine() {
         const hitMidpoint = pos.side === "LONG" ? price >= midpoint : price <= midpoint;
         if (hitMidpoint && pos.quantity >= 2) {
           const halfQty = Math.floor(pos.quantity / 2);
-          executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: halfQty, price });
-          // Move stop to breakeven
-          useStore.setState((s) => ({
-            positions: s.positions.map((p) =>
-              p.id === pos.id
-                ? { ...p, partialTpTaken: true, stopLoss: pos.entryPrice, trailingStop: pos.entryPrice }
-                : p
-            ),
-          }));
-          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Partial TP: sold ${halfQty} shares @ $${price.toFixed(2)} (midpoint $${midpoint.toFixed(2)}). Stop moved to breakeven $${pos.entryPrice.toFixed(2)}.` });
+          const ok = await submitLiveClose(pos.ticker, closeSide, halfQty);
+          if (ok) {
+            executeOrder({ ticker: pos.ticker, side: closeSide, type: "MARKET", quantity: halfQty, price });
+            useStore.setState((s) => ({
+              positions: s.positions.map((p) =>
+                p.id === pos.id
+                  ? { ...p, partialTpTaken: true, stopLoss: pos.entryPrice, trailingStop: pos.entryPrice }
+                  : p
+              ),
+            }));
+            addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason: `Partial TP: sold ${halfQty} shares @ $${price.toFixed(2)} (midpoint $${midpoint.toFixed(2)}). Stop moved to breakeven $${pos.entryPrice.toFixed(2)}.` });
+          }
           continue;
         }
       }
@@ -527,8 +644,11 @@ export function useAutoTradeEngine() {
       }
 
       if (reason) {
-        executeOrder({ ticker: pos.ticker, side: pos.side === "LONG" ? "SELL" : "BUY", type: "MARKET", quantity: pos.quantity, price });
-        addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason });
+        const ok = await submitLiveClose(pos.ticker, closeSide, pos.quantity);
+        if (ok) {
+          executeOrder({ ticker: pos.ticker, side: closeSide, type: "MARKET", quantity: pos.quantity, price });
+          addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason });
+        }
       }
     }
   }, [executeOrder, addAutoTradeLog, settings, sweepSettledFunds]);
