@@ -205,6 +205,17 @@ export function useAutoTradeEngine() {
     }
 
     const { liveAccount } = useStore.getState();
+
+    // Don't trade live until account data has loaded — avoids sizing off paper balance
+    if (isLive && !liveAccount) {
+      addAutoTradeLog({
+        ticker: "SYSTEM",
+        decision: "BLOCKED",
+        reason: "Waiting for live account data to load. Will retry next cycle.",
+      });
+      return;
+    }
+
     const portfolioValue = isLive && liveAccount
       ? liveAccount.portfolioValue
       : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
@@ -257,19 +268,6 @@ export function useAutoTradeEngine() {
       if (ind.relVolume !== undefined && ind.relVolume < 0.5) {
         addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `Volume too thin (${ind.relVolume.toFixed(2)}x avg). Waiting for liquidity.`, signal });
         continue;
-      }
-
-      // Trend filter — only trade with the trend
-      if (ind.sma20 && quote) {
-        const aboveSma = quote.price > ind.sma20;
-        if (signal.signal === "BUY" && !aboveSma) {
-          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `BUY skipped — price below SMA20 ($${ind.sma20.toFixed(2)}). Counter-trend.`, signal });
-          continue;
-        }
-        if (signal.signal === "SELL" && aboveSma) {
-          addAutoTradeLog({ ticker, decision: "SKIPPED", reason: `SELL skipped — price above SMA20 ($${ind.sma20.toFixed(2)}). Counter-trend.`, signal });
-          continue;
-        }
       }
 
       // Confidence gate

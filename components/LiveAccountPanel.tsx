@@ -2,14 +2,13 @@
 import { useEffect, useCallback } from "react";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { RefreshCw, ShieldAlert, TrendingUp, TrendingDown } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import type { LivePosition } from "@/lib/types";
 
-export default function LiveAccountPanel() {
+export function useLiveAccountSync() {
   const alpacaLiveKey = useStore((s) => s.alpacaLiveKey);
   const alpacaLiveSecret = useStore((s) => s.alpacaLiveSecret);
   const alpacaMode = useStore((s) => s.alpacaMode);
-  const liveAccount = useStore((s) => s.liveAccount);
   const setLiveAccount = useStore((s) => s.setLiveAccount);
   const recordApiCall = useStore((s) => s.recordApiCall);
 
@@ -32,6 +31,11 @@ export default function LiveAccountPanel() {
     const interval = setInterval(fetchAccount, 15000);
     return () => clearInterval(interval);
   }, [fetchAccount]);
+}
+
+export default function LiveAccountPanel() {
+  const liveAccount = useStore((s) => s.liveAccount);
+  const alpacaMode = useStore((s) => s.alpacaMode);
 
   if (!liveAccount) return null;
 

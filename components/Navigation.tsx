@@ -5,6 +5,7 @@ import { Activity, BookOpen, Bell, Settings, TrendingUp, Bot, Twitter, AlertTria
 import { cn, getMarketPhase } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { useAutoTradeEngine } from "@/lib/autoTrade";
+import { useLiveAccountSync } from "@/components/LiveAccountPanel";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: Activity },
@@ -29,7 +30,8 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function Navigation() {
-  useAutoTradeEngine(); // always mounted — runs regardless of which page/tab is active
+  useAutoTradeEngine();    // always mounted — runs regardless of which page/tab is active
+  useLiveAccountSync();   // keeps liveAccount fresh on every page
   const pathname = usePathname();
   const phase = getMarketPhase();
   const cashBalance = useStore((s) => s.cashBalance);
