@@ -30,18 +30,23 @@ const PHASE_LABEL: Record<string, string> = {
 export default function Navigation() {
   const pathname = usePathname();
   const phase = getMarketPhase();
-  const cashBalance = useStore((s) => s.cashBalance);
-  const positions = useStore((s) => s.positions);
+  const cashBalance = useStore((s) => s.alpacaMode === "live" ? 0 : s.cashBalance);
+  const positions = useStore((s) => s.alpacaMode === "live" ? [] : s.positions);
   const autoTradeEnabled = useStore((s) => s.autoTradeEnabled);
   const tweets = useStore((s) => s.tweets);
   const autoTradeDailyCount = useStore((s) => s.autoTradeDailyCount);
+  const alpacaMode = useStore((s) => s.alpacaMode);
+  const liveAccount = useStore((s) => s.liveAccount);
   const apiCreditError = useStore((s) => s.apiCreditError);
   const setApiCreditError = useStore((s) => s.setApiCreditError);
   const outOfFundsError = useStore((s) => s.outOfFundsError);
   const setOutOfFundsError = useStore((s) => s.setOutOfFundsError);
-  const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
   const bannerCount = (apiCreditError ? 1 : 0) + (outOfFundsError ? 1 : 0);
-  const portfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
+
+  const isLive = alpacaMode === "live";
+  const paperPortfolioValue = cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
+  const portfolioValue = isLive ? (liveAccount?.portfolioValue ?? null) : paperPortfolioValue;
+  const dayPnl = isLive ? (liveAccount?.dayPnl ?? null) : positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
 
   return (
     <>
@@ -93,16 +98,21 @@ export default function Navigation() {
 
       {/* Portfolio value */}
       <div className="flex items-center gap-4 text-xs">
+        {isLive && (
+          <div className="flex items-center gap-1 text-[10px] font-bold text-bear border border-bear/40 bg-bear/10 rounded px-2 py-0.5 tracking-wider">
+            ● LIVE
+          </div>
+        )}
         <div className="text-text-dim">
-          Portfolio:{" "}
-          <span className="text-info font-bold">
-            ${portfolioValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {isLive ? "Account" : "Portfolio"}:{" "}
+          <span className={cn("font-bold", isLive ? "text-bear" : "text-info")}>
+            {portfolioValue === null ? "—" : `$${portfolioValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </span>
         </div>
         <div className="text-text-dim">
-          P&L:{" "}
-          <span className={cn("font-bold", totalUnrealized >= 0 ? "text-bull" : "text-bear")}>
-            {totalUnrealized >= 0 ? "+" : ""}${totalUnrealized.toFixed(2)}
+          {isLive ? "Day" : ""} P&L:{" "}
+          <span className={cn("font-bold", (dayPnl ?? 0) >= 0 ? "text-bull" : "text-bear")}>
+            {dayPnl === null ? "—" : `${(dayPnl ?? 0) >= 0 ? "+" : ""}$${Math.abs(dayPnl ?? 0).toFixed(2)}`}
           </span>
         </div>
         {autoTradeEnabled && (

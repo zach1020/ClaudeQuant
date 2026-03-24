@@ -330,8 +330,8 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* ── Paper Trading Reset ───────────────────────────────────────── */}
-        <div className="bg-surface border border-border rounded p-5 space-y-3">
+        {/* ── Paper Trading Reset (hidden in live mode) ─────────────────── */}
+        {store.alpacaMode !== "live" && <div className="bg-surface border border-border rounded p-5 space-y-3">
           <span className="text-xs font-bold text-text-dim tracking-wider">PAPER TRADING</span>
           <div className="flex items-center justify-between">
             <div>
@@ -349,7 +349,7 @@ export default function SettingsPage() {
               Reset to $25,000
             </button>
           </div>
-        </div>
+        </div>}
 
         {/* ── About ─────────────────────────────────────────────────────── */}
         <div className="bg-surface border border-border rounded p-5 space-y-2">

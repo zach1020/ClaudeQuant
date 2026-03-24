@@ -7,6 +7,9 @@ import type { Trade } from "@/lib/types";
 export default function JournalPage() {
   const trades = useStore((s) => s.trades);
   const cashBalance = useStore((s) => s.cashBalance);
+  const alpacaMode = useStore((s) => s.alpacaMode);
+  const liveAccount = useStore((s) => s.liveAccount);
+  const isLive = alpacaMode === "live";
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0);
@@ -16,8 +19,9 @@ export default function JournalPage() {
   const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0) / losses.length) : 0;
   const profitFactor = avgLoss > 0 ? avgWin / avgLoss : 0;
 
-  const INITIAL_BALANCE = 25000;
-  const totalReturn = ((cashBalance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100;
+  const totalReturn = isLive && liveAccount
+    ? liveAccount.dayPnlPct
+    : ((cashBalance - 25000) / 25000) * 100;
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -51,7 +55,7 @@ export default function JournalPage() {
           {trades.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-text-dim">
               <p className="text-sm">No trades yet</p>
-              <p className="text-xs mt-1">Paper trades will appear here after you close positions</p>
+              <p className="text-xs mt-1">Closed positions will appear here</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
