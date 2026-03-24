@@ -248,7 +248,7 @@ export default function SettingsPage() {
             <p>Auto-trade reuses existing signals (no duplicate calls within 5 min). Set a <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-info hover:underline">spend limit on console.anthropic.com ↗</a> to cap costs.</p>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-[11px] text-text font-bold">Market Hours Only</p>
@@ -259,6 +259,18 @@ export default function SettingsPage() {
                 className={cn("w-8 h-4 rounded-full transition-colors flex-shrink-0", store.autoTradeSettings.marketHoursOnly ? "bg-bull" : "bg-dim")}
               >
                 <span className={cn("block w-3 h-3 rounded-full bg-white transition-transform mx-0.5", store.autoTradeSettings.marketHoursOnly ? "translate-x-4" : "translate-x-0")} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[11px] text-text font-bold">Cash Account (T+1 Settlement)</p>
+                <p className="text-[10px] text-text-dim">Enforce T+1 settlement — proceeds from sales are locked until next business day. Mirrors how real cash accounts work.</p>
+              </div>
+              <button
+                onClick={() => store.setCashAccount(!store.cashAccount)}
+                className={cn("w-8 h-4 rounded-full transition-colors flex-shrink-0", store.cashAccount ? "bg-bull" : "bg-dim")}
+              >
+                <span className={cn("block w-3 h-3 rounded-full bg-white transition-transform mx-0.5", store.cashAccount ? "translate-x-4" : "translate-x-0")} />
               </button>
             </div>
           </div>

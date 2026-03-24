@@ -33,6 +33,9 @@ export function useAutoTradeEngine() {
   const autoTradeLastReset = useStore((s) => s.autoTradeLastReset);
   const trades = useStore((s) => s.trades);
 
+  const unsettledFunds = useStore((s) => s.unsettledFunds);
+  const cashAccount = useStore((s) => s.cashAccount);
+
   const executeOrder = useStore((s) => s.executeOrder);
   const addSignal = useStore((s) => s.addSignal);
   const addAutoTradeLog = useStore((s) => s.addAutoTradeLog);
@@ -41,6 +44,7 @@ export function useAutoTradeEngine() {
   const recordAnthropicUsage = useStore((s) => s.recordAnthropicUsage);
   const setApiCreditError = useStore((s) => s.setApiCreditError);
   const setOutOfFundsError = useStore((s) => s.setOutOfFundsError);
+  const sweepSettledFunds = useStore((s) => s.sweepSettledFunds);
 
   const lastTradeTime = useRef<Record<string, number>>({});
   const lastMarketClosedLog = useRef<number>(0);
@@ -192,7 +196,11 @@ export function useAutoTradeEngine() {
     const portfolioValue = isLive && liveAccount
       ? liveAccount.portfolioValue
       : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
-    const availableCash = isLive && liveAccount ? liveAccount.buyingPower : cashBalance;
+    // For paper cash accounts, subtract proceeds that haven't settled yet
+    const unsettledTotal = (!isLive && cashAccount)
+      ? unsettledFunds.filter((f) => f.settlesAt > Date.now()).reduce((sum, f) => sum + f.amount, 0)
+      : 0;
+    const availableCash = isLive && liveAccount ? liveAccount.buyingPower : cashBalance - unsettledTotal;
 
     // Out-of-funds check
     const MIN_CASH = 100;
@@ -306,29 +314,31 @@ export function useAutoTradeEngine() {
         }
       }
 
-      // Position sizing — ATR-based if available, else use signal stop
+      // Position sizing — dollar-based (supports fractional shares)
       const riskPerShare = ind.atr
         ? ind.atr * 2
         : Math.abs(signal.entry - signal.stop_loss);
       if (riskPerShare <= 0) continue;
 
-      // Drawdown scaling — reduce size when down on the day
       const drawdownFactor = autoTradeDailyPnl < -(settings.maxDailyLoss * 0.5) ? 0.5 : 1.0;
 
-      let shares = Math.floor((portfolioValue * (settings.riskPerTrade / 100) * drawdownFactor) / riskPerShare);
-      if (shares * signal.entry > settings.maxPositionSize)
-        shares = Math.floor(settings.maxPositionSize / signal.entry);
-      if (shares * signal.entry > availableCash)
-        shares = Math.floor((availableCash * 0.95) / signal.entry);
-      if (shares < 1) {
+      // Compute notional $ amount, then derive fractional qty from entry price
+      let notional = (portfolioValue * (settings.riskPerTrade / 100) * drawdownFactor * signal.entry) / riskPerShare;
+      notional = Math.min(notional, settings.maxPositionSize, availableCash * 0.95);
+      notional = Math.max(0, notional);
+
+      if (notional < 1) {
         addAutoTradeLog({
           ticker,
           decision: "SKIPPED",
-          reason: `Position too small (${shares} shares). Check cash balance or risk settings.`,
+          reason: `Position too small ($${notional.toFixed(2)}). Check cash balance or risk settings.`,
           signal,
         });
         continue;
       }
+
+      // Fractional qty for paper; notional for live Alpaca
+      const fractionalQty = +(notional / signal.entry).toFixed(4);
 
       // Execute — route to Alpaca in live mode, local state in paper mode
       if (isLive) {
@@ -344,7 +354,7 @@ export function useAutoTradeEngine() {
               symbol: ticker,
               side: signal.signal === "BUY" ? "BUY" : "SELL",
               type: "MARKET",
-              qty: shares,
+              notional: +notional.toFixed(2),
             }),
           });
           const data = await res.json();
@@ -357,12 +367,12 @@ export function useAutoTradeEngine() {
             });
             continue;
           }
-          // Record locally for the journal
+          // Record locally for the journal using fractional qty
           executeOrder({
             ticker,
             side: signal.signal === "BUY" ? "BUY" : "SELL",
             type: "MARKET",
-            quantity: shares,
+            quantity: fractionalQty,
             price: signal.entry,
             stopPrice: signal.stop_loss,
             takeProfitPrice: signal.target,
@@ -381,7 +391,7 @@ export function useAutoTradeEngine() {
           ticker,
           side: signal.signal === "BUY" ? "BUY" : "SELL",
           type: "MARKET",
-          quantity: shares,
+          quantity: fractionalQty,
           price: signal.entry,
           stopPrice: signal.stop_loss,
           takeProfitPrice: signal.target,
@@ -393,19 +403,21 @@ export function useAutoTradeEngine() {
       addAutoTradeLog({
         ticker,
         decision: "EXECUTED",
-        reason: `${signal.signal} ${shares}sh @ $${signal.entry.toFixed(2)} | Stop $${signal.stop_loss.toFixed(2)} | Target $${signal.target.toFixed(2)} | ${(signal.confidence * 100).toFixed(0)}% confidence. ${signal.reason}`,
+        reason: `${signal.signal} ${fractionalQty}sh ($${notional.toFixed(2)}) @ $${signal.entry.toFixed(2)} | Stop $${signal.stop_loss.toFixed(2)} | Target $${signal.target.toFixed(2)} | ${(signal.confidence * 100).toFixed(0)}% confidence. ${signal.reason}`,
         signal,
-        sharesQty: shares,
-        positionSize: shares * signal.entry,
+        sharesQty: fractionalQty,
+        positionSize: notional,
       });
     }
   }, [
     autoTradeEnabled, settings, autoTradeDailyCount, autoTradeDailyPnl,
     watchlist, cashBalance, positions, tweets, evaluateSignal,
     executeOrder, addAutoTradeLog, setAutoTradeEnabled, setOutOfFundsError,
+    unsettledFunds, cashAccount,
   ]);
 
   const monitorPositions = useCallback(() => {
+    sweepSettledFunds();
     const { positions, quotes } = useStore.getState();
     const now = Date.now();
 
@@ -511,7 +523,7 @@ export function useAutoTradeEngine() {
         addAutoTradeLog({ ticker: pos.ticker, decision: "EXECUTED", reason });
       }
     }
-  }, [executeOrder, addAutoTradeLog, settings]);
+  }, [executeOrder, addAutoTradeLog, settings, sweepSettledFunds]);
 
   useEffect(() => {
     if (!autoTradeEnabled) return;

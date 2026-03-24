@@ -20,6 +20,10 @@ export default function AutoTradePanel() {
   const logs = useStore((s) => s.autoTradeLogs);
   const dailyPnl = useStore((s) => s.autoTradeDailyPnl);
   const dailyCount = useStore((s) => s.autoTradeDailyCount);
+  const unsettledFunds = useStore((s) => s.unsettledFunds);
+  const cashAccount = useStore((s) => s.cashAccount);
+  const setCashAccount = useStore((s) => s.setCashAccount);
+  const cashBalance = useStore((s) => s.cashBalance);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showLiveConfirm, setShowLiveConfirm] = useState(false);
@@ -90,6 +94,25 @@ export default function AutoTradePanel() {
           Auto-trade paused — {recentExecuted} positions may still be open. Manage them in the Trade tab.
         </div>
       )}
+
+      {/* Unsettled funds banner — paper cash account only */}
+      {!isLive && cashAccount && unsettledFunds.length > 0 && (() => {
+        const pending = unsettledFunds.filter((f) => f.settlesAt > Date.now());
+        if (!pending.length) return null;
+        const total = pending.reduce((s, f) => s + f.amount, 0);
+        const next = new Date(Math.min(...pending.map((f) => f.settlesAt)));
+        return (
+          <div className="px-4 py-2 bg-info/10 border-b border-info/20 text-[10px] text-info flex items-center gap-2">
+            <Clock size={11} />
+            <span>
+              <span className="font-bold">${total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              {" unsettled (T+1) — "}<span className="font-bold">${(cashBalance - total).toFixed(2)}</span>
+              {" available now · settles "}
+              {next.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Quick stats */}
       <div className="grid grid-cols-3 divide-x divide-border border-b border-border">
@@ -168,6 +191,12 @@ export default function AutoTradePanel() {
             hint="Skip outside 9:30–4:00 ET"
             value={settings.marketHoursOnly}
             onChange={(v) => setAutoTradeSettings({ marketHoursOnly: v })}
+          />
+          <ToggleInput
+            label="Cash Account (T+1)"
+            hint="Enforce T+1 settlement — no margin"
+            value={cashAccount}
+            onChange={setCashAccount}
           />
 
           {/* Live auto-trade — full-width with warning */}

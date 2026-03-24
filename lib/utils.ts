@@ -82,3 +82,24 @@ export function getMarketPhase(): "pre" | "open" | "after" | "closed" {
 export function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
 }
+
+/** Returns the T+1 settlement timestamp (next business day at 4pm ET). */
+export function getSettlementDate(from: Date = new Date()): number {
+  const d = new Date(from);
+  let businessDaysLeft = 1;
+  while (businessDaysLeft > 0) {
+    d.setDate(d.getDate() + 1);
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) businessDaysLeft--;
+  }
+  // 4pm ET expressed in UTC
+  const etOffset = isDST(d) ? 4 : 5; // EDT = UTC-4, EST = UTC-5
+  d.setUTCHours(16 + etOffset, 0, 0, 0);
+  return d.getTime();
+}
+
+function isDST(d: Date): boolean {
+  const jan = new Date(d.getFullYear(), 0, 1).getTimezoneOffset();
+  const jul = new Date(d.getFullYear(), 6, 1).getTimezoneOffset();
+  return d.getTimezoneOffset() < Math.max(jan, jul);
+}

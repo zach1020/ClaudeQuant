@@ -198,6 +198,15 @@ export interface Tweet {
   url: string;
 }
 
+// ── Settlement ───────────────────────────────────────────────────────────────
+
+export interface UnsettledFund {
+  id: string;
+  amount: number;    // proceeds locked until settlement
+  settlesAt: number; // Unix ms — T+1 next business day at 4pm ET
+  ticker: string;
+}
+
 // ── Auto-Trade ───────────────────────────────────────────────────────────────
 
 export interface AutoTradeSettings {

@@ -15,6 +15,7 @@ export async function POST(req: NextRequest) {
     side,           // "buy" | "sell"
     type,           // "market" | "limit" | "stop_limit"
     qty,
+    notional,       // dollar amount — used instead of qty for fractional orders
     limitPrice,
     stopPrice,
   } = body;
@@ -27,11 +28,17 @@ export async function POST(req: NextRequest) {
 
   const orderBody: Record<string, unknown> = {
     symbol,
-    qty: String(qty),
     side: side.toLowerCase(),
-    type: type.toLowerCase().replace("_", "_"),
+    type: type.toLowerCase(),
     time_in_force: "day",
   };
+
+  // Notional-based (fractional) vs qty-based ordering
+  if (notional != null) {
+    orderBody.notional = String(notional);
+  } else {
+    orderBody.qty = String(qty);
+  }
 
   if (type === "LIMIT" || type === "STOP_LIMIT") {
     orderBody.limit_price = String(limitPrice);

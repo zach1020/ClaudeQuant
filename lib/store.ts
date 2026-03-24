@@ -31,7 +31,7 @@ function freshApiUsage(): ApiUsageState {
     alpaca: { calls: 0, sessionStart: now },
   };
 }
-import { generateId } from "./utils";
+import { generateId, getSettlementDate } from "./utils";
 
 interface AppState {
   // Settings
@@ -65,6 +65,8 @@ interface AppState {
   positions: Position[];
   orders: Order[];
   trades: Trade[];
+  unsettledFunds: import("./types").UnsettledFund[];
+  cashAccount: boolean; // true = T+1 settlement enforced (no margin)
 
   // Alerts
   alerts: Alert[];
@@ -125,6 +127,8 @@ interface AppState {
   executeOrder: (order: Omit<Order, "id" | "createdAt" | "status">) => void;
   closePosition: (positionId: string, price: number) => void;
   updatePositionPrices: () => void;
+  sweepSettledFunds: () => void;
+  setCashAccount: (v: boolean) => void;
 
   // Actions — alerts
   addAlert: (alert: Omit<Alert, "id" | "createdAt" | "triggered">) => void;
@@ -171,6 +175,8 @@ export const useStore = create<AppState>()(
       positions: [],
       orders: [],
       trades: [],
+      unsettledFunds: [],
+      cashAccount: true,
 
       // Alerts
       alerts: [],
@@ -388,6 +394,9 @@ export const useStore = create<AppState>()(
               cashBalance: s.cashBalance + proceeds,
               orders: [...s.orders, order],
               trades: [trade, ...s.trades],
+              unsettledFunds: s.cashAccount
+                ? [...s.unsettledFunds, { id: generateId(), amount: proceeds, settlesAt: getSettlementDate(), ticker: orderData.ticker }]
+                : s.unsettledFunds,
               positions:
                 orderData.quantity >= longPos.quantity
                   ? s.positions.filter((p) => p.id !== longPos.id)
@@ -434,6 +443,13 @@ export const useStore = create<AppState>()(
           price,
         });
       },
+
+      sweepSettledFunds: () =>
+        set((s) => ({
+          unsettledFunds: s.unsettledFunds.filter((f) => f.settlesAt > Date.now()),
+        })),
+
+      setCashAccount: (v) => set({ cashAccount: v }),
 
       updatePositionPrices: () => {
         const { positions, quotes } = get();
@@ -529,6 +545,8 @@ export const useStore = create<AppState>()(
         positions: s.positions,
         orders: s.orders,
         trades: s.trades,
+        unsettledFunds: s.unsettledFunds,
+        cashAccount: s.cashAccount,
         alerts: s.alerts,
         autoTradeEnabled: s.autoTradeEnabled,
         autoTradeSettings: s.autoTradeSettings,
