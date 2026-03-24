@@ -208,31 +208,28 @@ export function useAutoTradeEngine() {
 
     // Don't trade live until account data has loaded — avoids sizing off paper balance
     if (isLive && !liveAccount) {
-      addAutoTradeLog({
-        ticker: "SYSTEM",
-        decision: "BLOCKED",
-        reason: "Waiting for live account data to load. Will retry next cycle.",
-      });
+      // Don't log every cycle — just silently wait
       return;
     }
 
     const portfolioValue = isLive && liveAccount
-      ? liveAccount.portfolioValue
+      ? Math.max(liveAccount.portfolioValue, liveAccount.equity, liveAccount.cash)
       : cashBalance + positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
     // For paper cash accounts, subtract proceeds that haven't settled yet
     const unsettledTotal = (!isLive && cashAccount)
       ? unsettledFunds.filter((f) => f.settlesAt > Date.now()).reduce((sum, f) => sum + f.amount, 0)
       : 0;
-    const availableCash = isLive && liveAccount ? liveAccount.buyingPower : cashBalance - unsettledTotal;
+    // Use the best available cash figure from Alpaca (buying power, cash, or equity)
+    const availableCash = isLive && liveAccount
+      ? Math.max(liveAccount.buyingPower, liveAccount.cash, 0)
+      : cashBalance - unsettledTotal;
 
-    // Out-of-funds check — hard stop only when truly $0
+    // Out-of-funds check — skip cycle but don't permanently disable (may be transient)
     if (availableCash <= 0) {
-      setAutoTradeEnabled(false);
-      setOutOfFundsError(true);
       addAutoTradeLog({
         ticker: "SYSTEM",
         decision: "BLOCKED",
-        reason: `No funds available ($${availableCash.toFixed(2)}). Auto-trade disabled.`,
+        reason: `No funds available (buyingPower=$${liveAccount?.buyingPower?.toFixed(2) ?? "?"}, cash=$${liveAccount?.cash?.toFixed(2) ?? "?"}, paper=$${cashBalance.toFixed(2)}). Will retry next cycle.`,
       });
       return;
     }
@@ -538,11 +535,13 @@ export function useAutoTradeEngine() {
 
   useEffect(() => {
     if (!autoTradeEnabled) return;
-    // Run every 60s (not 30s) — and only fires Claude if no fresh signal exists
+    // Clear stale error banners when re-enabled
+    setOutOfFundsError(false);
+    // Delay the first run by 3s to let liveAccount sync complete
+    const startup = setTimeout(evaluateAndTrade, 3000);
     const interval = setInterval(evaluateAndTrade, 60_000);
-    evaluateAndTrade(); // run once immediately on enable
-    return () => clearInterval(interval);
-  }, [autoTradeEnabled, evaluateAndTrade]);
+    return () => { clearTimeout(startup); clearInterval(interval); };
+  }, [autoTradeEnabled, evaluateAndTrade, setOutOfFundsError]);
 
   useEffect(() => {
     if (!autoTradeEnabled) return;
