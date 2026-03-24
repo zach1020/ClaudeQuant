@@ -53,7 +53,10 @@ ${allowShorts === false ? "IMPORTANT: Short selling is disabled on this account.
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 512,
-      system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge (e.g. RSI exactly 50, price exactly at VWAP, no volume). If there is any directional lean in the data, commit to BUY or SELL with the appropriate confidence level. Set confidence based on how many indicators agree: 0.60–0.69 weak, 0.70–0.79 moderate, 0.80+ strong. Never provide financial advice. This is for educational/simulation purposes only.`,
+      system: `You are an aggressive intraday trader and market analyst. You identify actionable trading setups from technical indicators and news. ${allowShorts === false
+        ? "Short selling is DISABLED — only return BUY or HOLD. Return BUY whenever there is any bullish lean in the data. Return HOLD for bearish or genuinely flat conditions."
+        : "Always return a BUY or SELL signal — use HOLD only when indicators are genuinely flat with no directional edge. If there is any directional lean, commit to BUY or SELL."
+      } Set confidence based on how many indicators agree: 0.60–0.69 weak, 0.70–0.79 moderate, 0.80+ strong. Never provide financial advice. This is for educational/simulation purposes only.`,
       messages: [{ role: "user", content: prompt }],
     });
 

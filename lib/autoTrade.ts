@@ -49,6 +49,7 @@ export function useAutoTradeEngine() {
 
   const lastTradeTime = useRef<Record<string, number>>({});
   const lastMarketClosedLog = useRef<number>(0);
+  const holdCache = useRef<Record<string, number>>({});
 
   // Reset daily counters at midnight
   useEffect(() => {
@@ -64,6 +65,12 @@ export function useAutoTradeEngine() {
         (s) => s.ticker === ticker && Date.now() - s.timestamp < FRESH_MS
       );
       if (existing) return existing;
+
+      // 1b. Skip if this ticker returned HOLD recently (saves API credits)
+      const HOLD_TTL = 5 * 60 * 1000;
+      if (holdCache.current[ticker] && Date.now() - holdCache.current[ticker] < HOLD_TTL) {
+        return null;
+      }
 
       // 2. No fresh signal — call Claude, but only if API key is present
       if (!anthropicKey) return null;
@@ -142,8 +149,11 @@ export function useAutoTradeEngine() {
           recordAnthropicUsage(data.usage.input_tokens ?? 0, data.usage.output_tokens ?? 0);
         }
         if (data.signal) {
-          // Only cache actionable signals — don't cache HOLD so it re-evaluates next cycle
-          if (data.signal.signal !== "HOLD") addSignal(data.signal);
+          if (data.signal.signal === "HOLD") {
+            holdCache.current[ticker] = Date.now(); // suppress re-calls for 5 min
+          } else {
+            addSignal(data.signal);
+          }
           return data.signal;
         }
       } catch {}
