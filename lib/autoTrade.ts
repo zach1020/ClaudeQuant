@@ -224,12 +224,12 @@ export function useAutoTradeEngine() {
       ? Math.max(liveAccount.buyingPower, liveAccount.cash, 0)
       : cashBalance - unsettledTotal;
 
-    // Out-of-funds check — skip cycle but don't permanently disable (may be transient)
-    if (availableCash <= 0) {
+    // Out-of-funds check — only for paper mode. In live mode, let Alpaca reject the order.
+    if (!isLive && availableCash <= 0) {
       addAutoTradeLog({
         ticker: "SYSTEM",
         decision: "BLOCKED",
-        reason: `No funds available (buyingPower=$${liveAccount?.buyingPower?.toFixed(2) ?? "?"}, cash=$${liveAccount?.cash?.toFixed(2) ?? "?"}, paper=$${cashBalance.toFixed(2)}). Will retry next cycle.`,
+        reason: `No paper funds available ($${availableCash.toFixed(2)}). Will retry next cycle.`,
       });
       return;
     }
